@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: raza-shah-signal
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 raza_iphone_app:app
+    envVars:
+      - key: MIN_SCORE
+        value: 85
+      - key: SCAN_INTERVAL
+        value: 900
