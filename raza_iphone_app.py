@@ -267,23 +267,73 @@ button{{margin-top:14px;padding:13px 24px;border:0;border-radius:10px;font-weigh
 </div></body></html>"""
 
 def top_symbols():
-    info = get_json("/fapi/v1/exchangeInfo")
-    allowed = {
-        s["symbol"] for s in info["symbols"]
-        if s.get("quoteAsset") == "USDT"
-        and s.get("contractType") == "PERPETUAL"
-        and s.get("status") == "TRADING"
-    }
-    tickers = get_json("/fapi/v1/ticker/24hr")
+    scan_log("TOP SYMBOLS: fetching exchangeInfo...")
+    allowed = None
+
+    # Try exchangeInfo first, but do not let it block the scanner forever.
+    try:
+        info = get_json("/fapi/v1/exchangeInfo", timeout=6)
+        allowed = {
+            s["symbol"] for s in info.get("symbols", [])
+            if s.get("quoteAsset") == "USDT"
+            and s.get("contractType") == "PERPETUAL"
+            and s.get("status") == "TRADING"
+        }
+        scan_log(f"TOP SYMBOLS: exchangeInfo OK | allowed={len(allowed)}")
+    except Exception as e:
+        scan_log(f"TOP SYMBOLS: exchangeInfo failed: {type(e).__name__}: {e}")
+
+    # Fetch 24h tickers with retry.
+    tickers = None
+    last_err = None
+
+    for attempt in range(1, 4):
+        try:
+            scan_log(f"TOP SYMBOLS: ticker/24hr attempt {attempt}/3")
+            tickers = get_json("/fapi/v1/ticker/24hr", timeout=6)
+            break
+        except Exception as e:
+            last_err = e
+            scan_log(f"TOP SYMBOLS: ticker/24hr failed attempt {attempt}: {type(e).__name__}: {e}")
+            time.sleep(1.5)
+
+    if tickers is None:
+        raise RuntimeError(f"Binance ticker/24hr unavailable: {last_err}")
+
     rows = []
+
     for x in tickers:
-        if x.get("symbol") in allowed:
-            try:
-                rows.append((x["symbol"], float(x.get("quoteVolume",0))))
-            except Exception:
-                pass
-    rows.sort(key=lambda x:x[1], reverse=True)
-    return [s for s,_ in rows[:TOP_COINS]]
+        try:
+            symbol = x.get("symbol", "")
+
+            # Normal path: respect exchangeInfo filter.
+            if allowed is not None:
+                if symbol not in allowed:
+                    continue
+            else:
+                # Fallback path if exchangeInfo failed:
+                # keep obvious USDT perpetual-style symbols from futures ticker feed.
+                if not symbol.endswith("USDT"):
+                    continue
+
+            qv = float(x.get("quoteVolume", 0) or 0)
+            if qv <= 0:
+                continue
+
+            rows.append((symbol, qv))
+        except Exception:
+            pass
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+
+    symbols = [s for s, _ in rows[:TOP_COINS]]
+
+    if not symbols:
+        raise RuntimeError("No Binance USDT futures symbols found")
+
+    scan_log(f"TOP SYMBOLS LOADED: {len(symbols)}")
+    return symbols
+
 
 def klines(symbol, interval="5m", limit=60):
     return get_json("/fapi/v1/klines", {"symbol":symbol,"interval":interval,"limit":limit})
@@ -515,8 +565,16 @@ def scan_once():
     check_open_trades()
 
     scan_log("Loading Top 100 Binance Futures symbols...")
-    symbols = top_symbols()
-    scan_log(f"TOP SYMBOLS LOADED: {len(symbols)}")
+    try:
+        symbols = top_symbols()
+    except Exception as e:
+        scan_log(f"TOP SYMBOL LOAD ERROR: {type(e).__name__}: {e}")
+        with state_lock:
+            state["last_error"] = f"Top symbols error: {type(e).__name__}: {e}"
+            state["status"] = "Binance symbol load error — retrying"
+            state["last_scan"] = datetime.now(timezone.utc).isoformat()
+            state["last_scan_seconds"] = round(time.time() - scan_start, 2)
+        return
 
     with state_lock:
         state["scan_progress"] = f"0/{len(symbols)}"
