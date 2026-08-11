@@ -1,10 +1,10 @@
 
-import os, time, csv, threading
-from datetime import datetime, timezone
+import os, time, csv, threading, secrets
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, render_template, send_from_directory
+from flask import Flask, jsonify, render_template, send_from_directory, request, session as flask_session, redirect, url_for, Response
 
 BASE_URL = "https://fapi.binance.com"
 
@@ -18,10 +18,15 @@ SL_PCT = float(os.getenv("SL_PCT", "0.004"))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+APP_URL = os.getenv("APP_URL", "https://raza-shah-signal.onrender.com").rstrip("/")
+APP_SECRET_KEY = os.getenv("APP_SECRET_KEY", "change-this-secret-in-render")
+OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "300"))
+OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 LIVE_FILE = DATA_DIR / "live_signals.csv"
+TRADES_FILE = DATA_DIR / "trade_results.csv"
 
 CSV_COLUMNS = [
     "time_utc","symbol","signal","score","price",
@@ -33,7 +38,13 @@ CSV_COLUMNS = [
 session = requests.Session()
 session.headers.update({"User-Agent":"RAZA-iPhone-Signal/1.0"})
 
+TRADE_COLUMNS = [
+    "trade_id","time_utc","closed_time_utc","symbol","signal","score",
+    "entry","tp","sl","status","exit_price"
+]
+
 app = Flask(__name__)
+app.secret_key = APP_SECRET_KEY
 state_lock = threading.Lock()
 state = {
     "running": False,
@@ -44,6 +55,9 @@ state = {
     "latest_signal": None,
     "last_error": None
 }
+
+otp_lock = threading.Lock()
+otp_state = {"code": None, "expires": None, "attempts": 0}
 
 def get_json(path, params=None, timeout=12):
     r = session.get(BASE_URL + path, params=params or {}, timeout=timeout)
@@ -60,6 +74,140 @@ def telegram(text):
         return True
     except Exception:
         return False
+
+
+def trade_rows():
+    if not TRADES_FILE.exists():
+        return []
+    try:
+        with TRADES_FILE.open("r", newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+def write_trade_rows(rows):
+    with TRADES_FILE.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=TRADE_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+
+def add_open_trade(row):
+    rows = trade_rows()
+    trade_id = f'{row["symbol"]}-{int(time.time()*1000)}'
+    rows.append({
+        "trade_id": trade_id,
+        "time_utc": row["time_utc"],
+        "closed_time_utc": "",
+        "symbol": row["symbol"],
+        "signal": row["signal"],
+        "score": row["score"],
+        "entry": row["price"],
+        "tp": row["tp"],
+        "sl": row["sl"],
+        "status": "OPEN",
+        "exit_price": ""
+    })
+    write_trade_rows(rows)
+    return trade_id
+
+def performance():
+    rows = trade_rows()
+    closed = [r for r in rows if r.get("status") in ("WIN","LOSS")]
+    wins = sum(1 for r in closed if r.get("status") == "WIN")
+    losses = sum(1 for r in closed if r.get("status") == "LOSS")
+    total = wins + losses
+    return {
+        "total_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round((wins/total)*100, 2) if total else 0.0,
+        "open_trades": sum(1 for r in rows if r.get("status") == "OPEN")
+    }
+
+def check_open_trades():
+    rows = trade_rows()
+    changed = False
+    closed_messages = []
+    for r in rows:
+        if r.get("status") != "OPEN":
+            continue
+        try:
+            symbol = r["symbol"]
+            side = r["signal"]
+            entry = float(r["entry"])
+            tp = float(r["tp"])
+            sl = float(r["sl"])
+            ticker = get_json("/fapi/v1/ticker/price", {"symbol": symbol})
+            px = float(ticker["price"])
+            result = None
+            if side == "BUY":
+                if px >= tp:
+                    result = "WIN"
+                elif px <= sl:
+                    result = "LOSS"
+            else:
+                if px <= tp:
+                    result = "WIN"
+                elif px >= sl:
+                    result = "LOSS"
+            if result:
+                r["status"] = result
+                r["exit_price"] = px
+                r["closed_time_utc"] = datetime.now(timezone.utc).isoformat()
+                changed = True
+                closed_messages.append((symbol, side, result, entry, tp, sl, px))
+        except Exception:
+            pass
+    if changed:
+        write_trade_rows(rows)
+        p = performance()
+        for symbol, side, result, entry, tp, sl, px in closed_messages:
+            icon = "✅" if result == "WIN" else "❌"
+            label = "TP HIT / WIN" if result == "WIN" else "SL HIT / LOSS"
+            telegram(
+                f"{icon} {label} — {symbol}\n"
+                f"Side: {side}\nEntry: {entry:.8g}\nExit: {px:.8g}\n"
+                f"TP: {tp:.8g}\nSL: {sl:.8g}\n\n"
+                f"📊 ALL-TIME PERFORMANCE\n"
+                f"Total Trades: {p['total_trades']}\nWins: {p['wins']}\n"
+                f"Losses: {p['losses']}\nWinning: {p['win_rate']:.2f}%\n"
+                f"🔗 Live: {APP_URL}"
+            )
+
+def generate_otp():
+    code = f"{secrets.randbelow(1000000):06d}"
+    with otp_lock:
+        otp_state["code"] = code
+        otp_state["expires"] = time.time() + OTP_TTL_SECONDS
+        otp_state["attempts"] = 0
+    telegram(
+        f"🔐 RAZA SHAH SIGNAL — ACCESS REQUEST\n"
+        f"Permission Code: {code}\n"
+        f"Valid for: {OTP_TTL_SECONDS//60} minutes\n"
+        f"🔗 {APP_URL}"
+    )
+    return code
+
+def is_authorized():
+    return bool(flask_session.get("authorized"))
+
+def login_html(message=""):
+    return f"""<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RAZA SHAH SIGNAL — Secure Access</title>
+<style>
+body{{font-family:Arial;background:#07111f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.box{{width:min(92%,420px);background:#101d2e;padding:28px;border-radius:18px;text-align:center}}
+input{{font-size:24px;letter-spacing:6px;width:85%;padding:14px;text-align:center;border-radius:10px;border:1px solid #445;background:#07111f;color:#fff}}
+button{{margin-top:14px;padding:13px 24px;border:0;border-radius:10px;font-weight:bold;cursor:pointer}}
+.msg{{margin:12px;color:#ffcc66}} .small{{opacity:.7;font-size:13px}}
+</style></head><body><div class="box">
+<h2>🔐 RAZA SHAH SIGNAL</h2><p>Telegram permission code required</p>
+<div class="msg">{message}</div>
+<form method="post" action="/verify"><input name="code" inputmode="numeric" maxlength="6" placeholder="000000" required>
+<br><button type="submit">OPEN APP</button></form>
+<p class="small">A fresh code is sent to the configured Telegram chat.</p>
+</div></body></html>"""
 
 def top_symbols():
     info = get_json("/fapi/v1/exchangeInfo")
@@ -200,6 +348,7 @@ def scan_once():
         state["status"] = "Scanning Top 100..."
         state["last_error"] = None
 
+    check_open_trades()
     candidates = []
     for symbol in top_symbols():
         try:
@@ -241,14 +390,18 @@ def scan_once():
                 "oi_change_pct":oi,"tp":tp,"sl":sl
             }
             save_signal(row)
+            add_open_trade(row)
             with state_lock:
                 state["latest_signal"] = row
 
+            p = performance()
             telegram(
-                f"🚨 {side} NOW — {symbol}\n"
-                f"Score: {score}/100 ✅\n"
+                f"🚨 TRADE READY — {symbol}\n"
+                f"Side: {side}\nScore: {score}/100 ✅\n"
                 f"Entry: {price:.8g}\nTP: {tp:.8g}\nSL: {sl:.8g}\n"
-                f"Flow: {delta:+.2f}\nBook: {book:+.2f}\nSpread: {spread:.2f} bps\nOI: {oi:+.2f}%"
+                f"Flow: {delta:+.2f}\nBook: {book:+.2f}\nSpread: {spread:.2f} bps\nOI: {oi:+.2f}%\n\n"
+                f"📊 Closed Trades: {p['total_trades']} | Win Rate: {p['win_rate']:.2f}%\n"
+                f"🔗 Live: {APP_URL}"
             )
             alerts += 1
         except Exception:
@@ -264,7 +417,13 @@ def scanner_loop():
     with state_lock:
         state["running"] = True
 
-    telegram("✅ RAZA SHAH iPHONE SIGNAL APP STARTED\n85+ scanner active.")
+    p = performance()
+    telegram(
+        f"🟢 RAZA SHAH SIGNAL — LIVE ACTIVE\n"
+        f"Scanner running | {MIN_SCORE}+ signals only\n"
+        f"All-Time: {p['total_trades']} trades | {p['win_rate']:.2f}% winning\n"
+        f"🔗 Live Dashboard: {APP_URL}"
+    )
 
     while True:
         start = time.time()
@@ -282,20 +441,56 @@ def scanner_loop():
 
 @app.route("/")
 def home():
+    if not is_authorized():
+        generate_otp()
+        return login_html("Permission code sent to Telegram.")
     return render_template("index.html")
+
+@app.route("/verify", methods=["POST"])
+def verify():
+    code = (request.form.get("code") or "").strip()
+    with otp_lock:
+        valid_code = otp_state.get("code")
+        expires = otp_state.get("expires") or 0
+        attempts = otp_state.get("attempts", 0)
+        if attempts >= OTP_MAX_ATTEMPTS:
+            return login_html("Too many attempts. Reload the page for a new code."), 429
+        otp_state["attempts"] = attempts + 1
+        ok = bool(valid_code and secrets.compare_digest(code, valid_code) and time.time() <= expires)
+        if ok:
+            otp_state["code"] = None
+            otp_state["expires"] = None
+    if not ok:
+        return login_html("Invalid or expired code."), 401
+    flask_session["authorized"] = True
+    telegram("✅ RAZA SHAH SIGNAL — ACCESS GRANTED")
+    return redirect(url_for("home"))
+
+@app.route("/logout")
+def logout():
+    flask_session.clear()
+    return redirect(url_for("home"))
 
 @app.route("/api/status")
 def api_status():
+    if not is_authorized():
+        return jsonify({"error":"unauthorized"}), 401
     with state_lock:
         x = dict(state)
     x["signals"] = recent_signals(20)
     x["telegram"] = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
     x["min_score"] = MIN_SCORE
+    x["performance"] = performance()
     return jsonify(x)
+
 @app.route("/api/signal")
 def api_signal():
+    if not is_authorized():
+        return jsonify({"error":"unauthorized"}), 401
     with state_lock:
-        return jsonify(dict(state))
+        x = dict(state)
+    x["performance"] = performance()
+    return jsonify(x)
 @app.route("/manifest.webmanifest")
 def manifest():
     return send_from_directory("static","manifest.webmanifest", mimetype="application/manifest+json")
