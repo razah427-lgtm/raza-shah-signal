@@ -24,6 +24,7 @@ OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "300"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 ACCESS_TTL_SECONDS = int(os.getenv("ACCESS_TTL_SECONDS", "86400"))  # 24 hours
 TELEGRAM_STATUS_INTERVAL = int(os.getenv("TELEGRAM_STATUS_INTERVAL", "3600"))  # 1 hour
+SIGNAL_COOLDOWN_SECONDS = int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "14400"))  # 4 hours per symbol/side
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -56,6 +57,7 @@ state = {
     "next_scan": None,
     "alerts_last_scan": 0,
     "latest_signal": None,
+    "best_candidate": None,
     "last_error": None
 }
 
@@ -250,10 +252,10 @@ input{{font-size:24px;letter-spacing:6px;width:85%;padding:14px;text-align:cente
 button{{margin-top:14px;padding:13px 24px;border:0;border-radius:10px;font-weight:bold;cursor:pointer}}
 .msg{{margin:12px;color:#ffcc66}} .small{{opacity:.7;font-size:13px}}
 </style></head><body><div class="box">
-<h2>🔐 RAZA SHAH SIGNAL</h2><p>Telegram permission code required</p>
+<h2>🔐 RAZA SHAH SIGNAL</h2><p><b>Waiting for Admin Permission</b></p><p>Enter 6-Digit Permission Code</p>
 <div class="msg">{message}</div>
 <form method="post" action="/verify"><input name="code" inputmode="numeric" maxlength="6" placeholder="000000" required>
-<br><button type="submit">OPEN APP</button></form>
+<br><button type="submit">REQUEST ACCESS</button></form>
 <p class="small">One code per IP. After approval, this IP stays authorized for 24 hours.</p>
 </div></body></html>"""
 
@@ -391,75 +393,167 @@ def recent_signals(limit=20):
         rows = list(csv.DictReader(f))
     return list(reversed(rows[-limit:]))
 
+def has_recent_or_open_trade(symbol, side):
+    now = datetime.now(timezone.utc)
+    for r in trade_rows():
+        if r.get("symbol") != symbol or r.get("signal") != side:
+            continue
+        if r.get("status") == "OPEN":
+            return True
+        try:
+            t = datetime.fromisoformat(r.get("time_utc", ""))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            if (now - t).total_seconds() < SIGNAL_COOLDOWN_SECONDS:
+                return True
+        except Exception:
+            pass
+    return False
+
+def candidate_payload(symbol, lm, side, score, delta, buy, sell, spread, book, oi):
+    price = lm["price"]
+    if side == "BUY":
+        tp = price * (1 + TP_PCT)
+        sl = price * (1 - SL_PCT)
+    else:
+        tp = price * (1 - TP_PCT)
+        sl = price * (1 + SL_PCT)
+
+    confirmed = hard_confirm(side, delta, book, spread)
+    return {
+        "time_utc": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol,
+        "signal": side,
+        "score": score,
+        "price": price,
+        "flow_delta": delta,
+        "buy_usd_60s": buy,
+        "sell_usd_60s": sell,
+        "spread_bps": spread,
+        "book_imb": book,
+        "trend_5m": lm["trend"],
+        "oi_change_pct": oi,
+        "tp": tp,
+        "sl": sl,
+        "points_to_85": max(0, MIN_SCORE - score),
+        "hard_confirm": confirmed,
+        "status": "TRADE READY" if (score >= MIN_SCORE and confirmed) else "FORMING"
+    }
+
 def scan_once():
     with state_lock:
-        state["status"] = "Scanning Top 100..."
+        state["status"] = f"Scanning Top {TOP_COINS}..."
         state["last_error"] = None
 
     check_open_trades()
     candidates = []
+
     for symbol in top_symbols():
         try:
             lm = light_metrics(symbol)
             if not lm:
                 continue
-            rank = lm["vol_ratio"]*3 + abs(lm["momentum"])*10000
-            candidates.append((rank,symbol,lm))
+            rank = lm["vol_ratio"] * 3 + abs(lm["momentum"]) * 10000
+            candidates.append((rank, symbol, lm))
         except Exception:
             pass
 
-    candidates.sort(reverse=True, key=lambda x:x[0])
-    alerts = 0
+    candidates.sort(reverse=True, key=lambda x: x[0])
 
-    for _,symbol,lm in candidates[:DEEP_CHECK]:
+    alerts = 0
+    best = None
+
+    for _, symbol, lm in candidates[:DEEP_CHECK]:
         try:
             dm = depth_metrics(symbol)
             if not dm:
                 continue
-            spread, book = dm
-            delta,buy,sell = flow_metrics(symbol)
-            oi = oi_change_pct(symbol)
-            side,score = build_score(lm,delta,spread,book,oi)
 
-            if not side or score < MIN_SCORE or not hard_confirm(side,delta,book,spread):
+            spread, book = dm
+            delta, buy, sell = flow_metrics(symbol)
+            oi = oi_change_pct(symbol)
+            side, score = build_score(lm, delta, spread, book, oi)
+
+            if not side:
                 continue
 
-            price = lm["price"]
-            if side == "BUY":
-                tp = price*(1+TP_PCT); sl = price*(1-SL_PCT)
-            else:
-                tp = price*(1-TP_PCT); sl = price*(1+SL_PCT)
+            c = candidate_payload(
+                symbol, lm, side, score,
+                delta, buy, sell, spread, book, oi
+            )
+
+            if best is None or score > best["score"]:
+                best = c
+
+            if score < MIN_SCORE or not c["hard_confirm"]:
+                continue
+
+            if has_recent_or_open_trade(symbol, side):
+                continue
 
             row = {
-                "time_utc":datetime.now(timezone.utc).isoformat(),
-                "symbol":symbol,"signal":side,"score":score,"price":price,
-                "flow_delta":delta,"buy_usd_60s":buy,"sell_usd_60s":sell,
-                "spread_bps":spread,"book_imb":book,"trend_5m":lm["trend"],
-                "oi_change_pct":oi,"tp":tp,"sl":sl
+                "time_utc": c["time_utc"],
+                "symbol": symbol,
+                "signal": side,
+                "score": score,
+                "price": c["price"],
+                "flow_delta": delta,
+                "buy_usd_60s": buy,
+                "sell_usd_60s": sell,
+                "spread_bps": spread,
+                "book_imb": book,
+                "trend_5m": lm["trend"],
+                "oi_change_pct": oi,
+                "tp": c["tp"],
+                "sl": c["sl"]
             }
+
             save_signal(row)
             add_open_trade(row)
+
             with state_lock:
                 state["latest_signal"] = row
+                state["best_candidate"] = c
 
             p = performance()
+
             telegram_async(
                 f"🚨 TRADE READY — {symbol}\n"
-                f"Side: {side}\nScore: {score}/100 ✅\n"
-                f"Entry: {price:.8g}\nTP: {tp:.8g}\nSL: {sl:.8g}\n"
-                f"Flow: {delta:+.2f}\nBook: {book:+.2f}\nSpread: {spread:.2f} bps\nOI: {oi:+.2f}%\n\n"
+                f"Direction: {'BUY / LONG' if side == 'BUY' else 'SELL / SHORT'}\n"
+                f"Score: {score}/100 ✅\n"
+                f"Entry: {c['price']:.8g}\n"
+                f"TP: {c['tp']:.8g}\n"
+                f"SL: {c['sl']:.8g}\n"
+                f"Flow: {delta:+.2f}\n"
+                f"Book: {book:+.2f}\n"
+                f"Spread: {spread:.2f} bps\n"
+                f"OI: {oi:+.2f}%\n\n"
                 f"📊 Closed Trades: {p['total_trades']} | Win Rate: {p['win_rate']:.2f}%\n"
                 f"🔗 Live: {APP_URL}"
             )
+
             alerts += 1
         except Exception:
             pass
 
     now = datetime.now(timezone.utc)
+
     with state_lock:
+        state["best_candidate"] = best
         state["last_scan"] = now.isoformat()
         state["alerts_last_scan"] = alerts
-        state["status"] = "Waiting for 85+ setup"
+
+        if alerts:
+            state["status"] = f"{alerts} verified 85+ trade ready"
+        elif best:
+            state["status"] = (
+                f"Best forming: {best['symbol']} "
+                f"{'LONG' if best['signal'] == 'BUY' else 'SHORT'} "
+                f"{best['score']}/100"
+            )
+        else:
+            state["status"] = "Waiting for 85+ setup"
+
 
 def telegram_hourly_status_loop():
     # First hourly status is sent after one full hour; startup message is handled by scanner_loop.
@@ -469,10 +563,20 @@ def telegram_hourly_status_loop():
             p = performance()
             with state_lock:
                 st = dict(state)
+            best = st.get("best_candidate")
+            best_line = "Best Candidate: none"
+            if best:
+                best_line = (
+                    f"Best Candidate: {best.get('symbol')} | "
+                    f"{'LONG' if best.get('signal') == 'BUY' else 'SHORT'} | "
+                    f"{best.get('score', 0)}/100"
+                )
+
             telegram_async(
                 f"🟢 RAZA SHAH SIGNAL — 1 HOUR STATUS\n"
                 f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
                 f"Status: {st.get('status') or '—'}\n"
+                f"{best_line}\n"
                 f"85+ Signals | Last scan alerts: {st.get('alerts_last_scan', 0)}\n"
                 f"Total Trades: {p['total_trades']} | Wins: {p['wins']} | Losses: {p['losses']}\n"
                 f"Winning: {p['win_rate']:.2f}% | Open: {p['open_trades']}\n"
