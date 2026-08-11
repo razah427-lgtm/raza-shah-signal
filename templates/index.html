@@ -1,340 +1,538 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="RAZA SIGNAL">
-  <meta name="theme-color" content="#06110c">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RAZA Signal">
+<meta name="theme-color" content="#06110c">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>RAZA SHAH SIGNAL</title>
 
-  <title>RAZA SHAH SIGNAL</title>
+<style>
+:root{
+--bg:#06110c;
+--card:#0c1b13;
+--line:#1c3929;
+--green:#62f59a;
+--red:#ff6a7a;
+--txt:#f3fff8;
+--muted:#91a89b
+}
 
-  <style>
-    :root{
-      --bg:#06110c;
-      --card:#0c1b13;
-      --line:#1c3929;
-      --green:#39f58a;
-      --red:#ff5263;
-      --text:#f4fff8;
-      --muted:#91aa9b;
-    }
+*{
+box-sizing:border-box;
+-webkit-tap-highlight-color:transparent
+}
 
-    *{
-      box-sizing:border-box;
-      -webkit-tap-highlight-color:transparent;
-    }
+html,body{
+margin:0;
+background:var(--bg);
+color:var(--txt);
+font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif
+}
 
-    html,body{
-      margin:0;
-      background:var(--bg);
-      color:var(--text);
-      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    }
+body{
+padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)
+}
 
-    body{
-      padding:
-        env(safe-area-inset-top)
-        0
-        env(safe-area-inset-bottom);
-    }
+.app{
+max-width:680px;
+margin:auto;
+padding:14px 14px 34px
+}
 
-    .app{
-      max-width:680px;
-      margin:auto;
-      padding:16px;
-    }
+.head{
+display:flex;
+align-items:center;
+justify-content:space-between;
+margin:6px 0 14px
+}
 
-    .head{
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      margin-bottom:18px;
-    }
+.brand{
+font-weight:900;
+letter-spacing:.7px;
+font-size:17px
+}
 
-    .brand{
-      font-weight:900;
-      letter-spacing:1px;
-      font-size:18px;
-    }
+.live{
+font-size:12px;
+border:1px solid #265a40;
+background:#0f2a1b;
+color:#7cf4aa;
+border-radius:999px;
+padding:7px 10px
+}
 
-    .live{
-      padding:7px 11px;
-      border:1px solid #265a40;
-      border-radius:20px;
-      font-size:12px;
-      color:var(--green);
-    }
+.card{
+background:linear-gradient(180deg,#0d1d15,#09150f);
+border:1px solid var(--line);
+border-radius:24px;
+padding:18px;
+margin-bottom:13px;
+box-shadow:0 18px 40px #0007
+}
 
-    .card{
-      background:linear-gradient(180deg,#0d1d15,#09150f);
-      border:1px solid var(--line);
-      border-radius:22px;
-      padding:18px;
-      margin-bottom:14px;
-    }
+.hero{
+text-align:center;
+padding:26px 18px
+}
 
-    .hero{
-      text-align:center;
-      padding:28px 18px;
-    }
+.coin{
+color:var(--muted);
+font-weight:700
+}
 
-    .coin{
-      color:var(--muted);
-      font-size:14px;
-    }
+.side{
+font-size:46px;
+font-weight:950;
+letter-spacing:-1px;
+margin:8px 0
+}
 
-    .signal{
-      font-size:38px;
-      font-weight:900;
-      margin:10px 0;
-      color:var(--green);
-    }
+.buy{color:var(--green)}
+.sell{color:var(--red)}
+.wait{color:#c6d4cc}
 
-    .score{
-      font-size:52px;
-      font-weight:900;
-      color:var(--green);
-    }
+.entry{
+color:var(--muted);
+font-size:14px
+}
 
-    .scoreLabel{
-      color:var(--muted);
-      font-size:13px;
-    }
+.scorebar{
+height:9px;
+background:#14281d;
+border-radius:99px;
+overflow:hidden;
+margin:20px 0 14px
+}
 
-    .grid{
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:10px;
-    }
+.scorefill{
+height:100%;
+width:0;
+background:linear-gradient(90deg,#39d976,#7af8aa);
+transition:.4s
+}
 
-    .box{
-      background:#08130e;
-      border:1px solid var(--line);
-      border-radius:16px;
-      padding:14px;
-    }
+.grid,
+.perf-grid{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:10px
+}
 
-    .label{
-      color:var(--muted);
-      font-size:12px;
-      margin-bottom:6px;
-    }
+.tile,
+.perf-tile{
+background:#08130e;
+border:1px solid #173123;
+border-radius:17px;
+padding:13px
+}
 
-    .value{
-      font-size:18px;
-      font-weight:800;
-    }
+.lab{
+font-size:10px;
+letter-spacing:.7px;
+text-transform:uppercase;
+color:var(--muted)
+}
 
-    .green{color:var(--green);}
-    .red{color:var(--red);}
+.val{
+font-size:18px;
+font-weight:850;
+margin-top:5px
+}
 
-    .bar{
-      height:9px;
-      background:#14251b;
-      border-radius:10px;
-      overflow:hidden;
-      margin-top:8px;
-    }
+.perf-value{
+font-size:25px;
+font-weight:950;
+margin-top:6px
+}
 
-    .fill{
-      height:100%;
-      width:85%;
-      background:var(--green);
-    }
+.good{color:var(--green)}
+.bad{color:var(--red)}
 
-    .status{
-      display:flex;
-      align-items:center;
-      gap:8px;
-      font-size:13px;
-      color:var(--muted);
-    }
+h3{
+font-size:16px;
+margin:0 0 12px
+}
 
-    .dot{
-      width:9px;
-      height:9px;
-      border-radius:50%;
-      background:var(--green);
-      box-shadow:0 0 12px var(--green);
-    }
+.row{
+display:flex;
+justify-content:space-between;
+gap:12px;
+padding:11px 0;
+border-bottom:1px solid #173123
+}
 
-    .footer{
-      text-align:center;
-      color:var(--muted);
-      font-size:11px;
-      padding:8px;
-    }
-  </style>
+.row:last-child{
+border-bottom:0
+}
+
+.muted{
+color:var(--muted);
+font-size:13px
+}
+
+.badge{
+font-size:12px;
+font-weight:900;
+padding:5px 9px;
+border-radius:10px
+}
+
+.bBuy{
+background:#123b25;
+color:var(--green)
+}
+
+.bSell{
+background:#421824;
+color:#ff8290
+}
+
+.install{
+display:none;
+background:#10251a;
+border:1px solid #2e6647;
+border-radius:18px;
+padding:14px;
+margin-bottom:13px
+}
+
+.install strong{
+display:block;
+margin-bottom:4px
+}
+
+.statusline{
+display:flex;
+justify-content:space-between;
+align-items:center;
+margin-top:12px;
+padding-top:12px;
+border-top:1px solid #173123
+}
+
+.dot{
+display:inline-block;
+width:9px;
+height:9px;
+border-radius:50%;
+background:var(--green);
+margin-right:6px
+}
+
+.foot{
+text-align:center;
+color:#6f8579;
+font-size:11px;
+padding:8px 6px
+}
+</style>
 </head>
 
 <body>
 
 <div class="app">
 
-  <div class="head">
-    <div class="brand">RAZA SHAH SIGNAL</div>
-    <div class="live">● LIVE</div>
-  </div>
+<div class="head">
+<div class="brand">⚡ RAZA SHAH SIGNAL</div>
+<div class="live" id="live">● LIVE</div>
+</div>
 
-  <div class="card hero">
-    <div class="coin" id="symbol">WAITING FOR LIVE SIGNAL</div>
+<div class="install" id="installTip">
+<strong>Install on iPhone</strong>
+Safari Share button → <b>Add to Home Screen</b>.
+</div>
 
-    <div class="signal" id="signal">
-      SCANNING
-    </div>
+<div class="card hero">
 
-    <div class="score" id="score">
-      85+
-    </div>
+<div class="coin" id="coin">Scanning market...</div>
 
-    <div class="scoreLabel">
-      SIGNAL SCORE REQUIRED
-    </div>
+<div class="side wait" id="side">WAIT</div>
 
-    <div class="bar">
-      <div class="fill" id="scoreBar"></div>
-    </div>
-  </div>
+<div class="entry" id="entry">
+Waiting for verified 85+ setup
+</div>
 
-  <div class="grid">
+<div class="scorebar">
+<div class="scorefill" id="scorefill"></div>
+</div>
 
-    <div class="box">
-      <div class="label">ENTRY</div>
-      <div class="value" id="entry">--</div>
-    </div>
+<div class="grid">
 
-    <div class="box">
-      <div class="label">DIRECTION</div>
-      <div class="value green" id="direction">WAIT</div>
-    </div>
+<div class="tile">
+<div class="lab">Strength</div>
+<div class="val" id="score">—</div>
+</div>
 
-    <div class="box">
-      <div class="label">TAKE PROFIT</div>
-      <div class="value green" id="tp">--</div>
-    </div>
+<div class="tile">
+<div class="lab">Status</div>
+<div class="val" id="status" style="font-size:14px">Starting…</div>
+</div>
 
-    <div class="box">
-      <div class="label">STOP LOSS</div>
-      <div class="value red" id="sl">--</div>
-    </div>
+<div class="tile">
+<div class="lab">Take Profit</div>
+<div class="val" id="tp">—</div>
+</div>
 
-    <div class="box">
-      <div class="label">ORDER BOOK</div>
-      <div class="value" id="book">SCANNING</div>
-    </div>
+<div class="tile">
+<div class="lab">Stop Loss</div>
+<div class="val" id="sl">—</div>
+</div>
 
-    <div class="box">
-      <div class="label">VOLUME FLOW</div>
-      <div class="value" id="flow">SCANNING</div>
-    </div>
+</div>
+</div>
 
-    <div class="box">
-      <div class="label">OPEN INTEREST</div>
-      <div class="value" id="oi">--</div>
-    </div>
+<div class="card">
 
-    <div class="box">
-      <div class="label">SPREAD</div>
-      <div class="value" id="spread">--</div>
-    </div>
+<h3>📊 ALL-TIME PERFORMANCE — 85+ TRADES</h3>
 
-  </div>
+<div class="perf-grid">
 
-  <div class="card">
-    <div class="status">
-      <div class="dot"></div>
-      <div id="statusText">
-        AI SCANNER ACTIVE — WAITING FOR 85+ SETUP
-      </div>
-    </div>
-  </div>
+<div class="perf-tile">
+<div class="lab">Total Trades</div>
+<div class="perf-value" id="totalTrades">0</div>
+</div>
 
-  <div class="footer">
-    Binance Futures • Signal Only • 85+ Filter
-  </div>
+<div class="perf-tile">
+<div class="lab">Winning %</div>
+<div class="perf-value good" id="winRate">0.00%</div>
+</div>
+
+<div class="perf-tile">
+<div class="lab">Wins</div>
+<div class="perf-value good" id="wins">0</div>
+</div>
+
+<div class="perf-tile">
+<div class="lab">Losses</div>
+<div class="perf-value bad" id="losses">0</div>
+</div>
+
+</div>
+
+<div class="statusline">
+<span class="muted">Open Trades</span>
+<strong id="openTrades">0</strong>
+</div>
+
+<div class="statusline">
+<span class="muted">Telegram</span>
+<strong id="telegramStatus">
+<span class="dot"></span> CHECKING
+</strong>
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>Live Confirmation</h3>
+
+<div class="row">
+<span class="muted">Flow Delta</span>
+<strong id="flow">—</strong>
+</div>
+
+<div class="row">
+<span class="muted">Order Book</span>
+<strong id="book">—</strong>
+</div>
+
+<div class="row">
+<span class="muted">Spread</span>
+<strong id="spread">—</strong>
+</div>
+
+<div class="row">
+<span class="muted">Open Interest</span>
+<strong id="oi">—</strong>
+</div>
+
+</div>
+
+<div class="card">
+
+<h3>Recent 85+ Signals</h3>
+
+<div id="history">
+<div class="muted">No signal yet.</div>
+</div>
+
+</div>
+
+<div class="foot">
+RAZA SHAH SIGNAL • 85+ VERIFIED SIGNALS • NO AUTOMATIC ORDER EXECUTION
+</div>
 
 </div>
 
 <script>
 
-async function refreshSignal(){
-
-  try{
-
-    const r = await fetch('/api/signal', {
-      cache:'no-store'
-    });
-
-    if(!r.ok) return;
-
-    const d = await r.json();
-
-    if(d.symbol)
-      document.getElementById('symbol').textContent = d.symbol;
-
-    if(d.signal){
-      const sig = d.signal.toUpperCase();
-
-      document.getElementById('signal').textContent = sig;
-
-      const bullish =
-        sig.includes('BUY') ||
-        sig.includes('LONG');
-
-      document.getElementById('signal').style.color =
-        bullish ? '#39f58a' : '#ff5263';
-
-      document.getElementById('direction').textContent =
-        bullish ? 'BUY / LONG' : 'SELL / SHORT';
-
-      document.getElementById('direction').style.color =
-        bullish ? '#39f58a' : '#ff5263';
-    }
-
-    if(d.score !== undefined){
-      document.getElementById('score').textContent =
-        d.score + '/100';
-
-      document.getElementById('scoreBar').style.width =
-        Math.min(100,d.score) + '%';
-    }
-
-    if(d.entry !== undefined)
-      document.getElementById('entry').textContent = d.entry;
-
-    if(d.tp !== undefined)
-      document.getElementById('tp').textContent = d.tp;
-
-    if(d.sl !== undefined)
-      document.getElementById('sl').textContent = d.sl;
-
-    if(d.order_book !== undefined)
-      document.getElementById('book').textContent = d.order_book;
-
-    if(d.volume_flow !== undefined)
-      document.getElementById('flow').textContent = d.volume_flow;
-
-    if(d.oi !== undefined)
-      document.getElementById('oi').textContent = d.oi;
-
-    if(d.spread !== undefined)
-      document.getElementById('spread').textContent = d.spread;
-
-    document.getElementById('statusText').textContent =
-      'LIVE SCANNER ACTIVE — 85+ SIGNALS ONLY';
-
-  }catch(e){
-
-    document.getElementById('statusText').textContent =
-      'SCANNER CONNECTING...';
-
-  }
+function f(n,d=8){
+let x=Number(n);
+return Number.isFinite(x)
+? x.toLocaleString(undefined,{maximumFractionDigits:d})
+: "—";
 }
 
-refreshSignal();
-setInterval(refreshSignal,5000);
+function shortTime(s){
+try{
+return new Date(s).toLocaleString();
+}catch(e){
+return s;
+}
+}
+
+function standalone(){
+return window.navigator.standalone===true ||
+window.matchMedia('(display-mode: standalone)').matches;
+}
+
+if(!standalone()){
+document.getElementById("installTip").style.display="block";
+}
+
+async function refresh(){
+
+try{
+
+let r=await fetch("/api/status",{cache:"no-store"});
+
+if(r.status===401){
+location.reload();
+return;
+}
+
+let d=await r.json();
+
+document.getElementById("live").textContent=
+d.running ? "● LIVE" : "● OFFLINE";
+
+document.getElementById("status").textContent=
+d.status || "—";
+
+let p=d.performance || {};
+
+document.getElementById("totalTrades").textContent=
+p.total_trades ?? 0;
+
+document.getElementById("wins").textContent=
+p.wins ?? 0;
+
+document.getElementById("losses").textContent=
+p.losses ?? 0;
+
+document.getElementById("openTrades").textContent=
+p.open_trades ?? 0;
+
+document.getElementById("winRate").textContent=
+Number(p.win_rate || 0).toFixed(2)+"%";
+
+let tg=document.getElementById("telegramStatus");
+
+if(d.telegram){
+tg.innerHTML='<span class="dot"></span> CONNECTED';
+}else{
+tg.textContent="OFFLINE";
+}
+
+let s=d.latest_signal;
+
+if(s){
+
+document.getElementById("coin").textContent=s.symbol;
+
+let side=document.getElementById("side");
+
+if(s.signal==="BUY"){
+side.textContent="BUY (LONG)";
+side.className="side buy";
+}else{
+side.textContent="SELL (SHORT)";
+side.className="side sell";
+}
+
+document.getElementById("entry").textContent=
+"Entry: "+f(s.price);
+
+document.getElementById("score").textContent=
+s.score+"/100";
+
+document.getElementById("scorefill").style.width=
+Math.min(100,Number(s.score))+"%";
+
+document.getElementById("tp").textContent=f(s.tp);
+document.getElementById("sl").textContent=f(s.sl);
+document.getElementById("flow").textContent=Number(s.flow_delta).toFixed(2);
+document.getElementById("book").textContent=Number(s.book_imb).toFixed(2);
+document.getElementById("spread").textContent=Number(s.spread_bps).toFixed(2)+" bps";
+document.getElementById("oi").textContent=Number(s.oi_change_pct).toFixed(2)+"%";
+
+}else{
+
+document.getElementById("coin").textContent="Scanning market...";
+
+let side=document.getElementById("side");
+side.textContent="WAIT";
+side.className="side wait";
+
+document.getElementById("entry").textContent=
+"Waiting for verified 85+ setup";
+}
+
+if(d.signals && d.signals.length){
+
+document.getElementById("history").innerHTML=
+d.signals.slice(0,10).map(x=>
+
+`<div class="row">
+
+<div>
+<strong>${x.symbol}</strong>
+<div class="muted">${shortTime(x.time_utc)}</div>
+</div>
+
+<div style="text-align:right">
+
+<span class="badge ${x.signal==="BUY"?"bBuy":"bSell"}">
+${x.signal}
+</span>
+
+<div class="muted" style="margin-top:5px">
+${x.score}/100
+</div>
+
+</div>
+
+</div>`
+
+).join("");
+
+}else{
+
+document.getElementById("history").innerHTML=
+'<div class="muted">No signal yet.</div>';
+
+}
+
+}catch(e){
+
+document.getElementById("live").textContent="● OFFLINE";
+
+}
+
+}
+
+refresh();
+setInterval(refresh,5000);
+
+if("serviceWorker" in navigator){
+navigator.serviceWorker.register("/sw.js").catch(()=>{});
+}
 
 </script>
 
