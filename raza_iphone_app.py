@@ -22,6 +22,8 @@ APP_URL = os.getenv("APP_URL", "https://raza-shah-signal.onrender.com").rstrip("
 APP_SECRET_KEY = os.getenv("APP_SECRET_KEY", "change-this-secret-in-render")
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "300"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
+ACCESS_TTL_SECONDS = int(os.getenv("ACCESS_TTL_SECONDS", "86400"))  # 24 hours
+TELEGRAM_STATUS_INTERVAL = int(os.getenv("TELEGRAM_STATUS_INTERVAL", "3600"))  # 1 hour
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -45,6 +47,7 @@ TRADE_COLUMNS = [
 
 app = Flask(__name__)
 app.secret_key = APP_SECRET_KEY
+app.permanent_session_lifetime = timedelta(seconds=ACCESS_TTL_SECONDS)
 state_lock = threading.Lock()
 state = {
     "running": False,
@@ -57,7 +60,8 @@ state = {
 }
 
 otp_lock = threading.Lock()
-otp_state = {"code": None, "expires": None, "attempts": 0}
+otp_by_ip = {}
+authorized_ips = {}
 
 def get_json(path, params=None, timeout=12):
     r = session.get(BASE_URL + path, params=params or {}, timeout=timeout)
@@ -69,11 +73,14 @@ def telegram(text):
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        r = session.post(url, data={"chat_id":TELEGRAM_CHAT_ID,"text":text}, timeout=10)
+        r = session.post(url, data={"chat_id":TELEGRAM_CHAT_ID,"text":text}, timeout=8)
         r.raise_for_status()
         return True
     except Exception:
         return False
+
+def telegram_async(text):
+    threading.Thread(target=telegram, args=(text,), daemon=True).start()
 
 
 def trade_rows():
@@ -164,7 +171,7 @@ def check_open_trades():
         for symbol, side, result, entry, tp, sl, px in closed_messages:
             icon = "✅" if result == "WIN" else "❌"
             label = "TP HIT / WIN" if result == "WIN" else "SL HIT / LOSS"
-            telegram(
+            telegram_async(
                 f"{icon} {label} — {symbol}\n"
                 f"Side: {side}\nEntry: {entry:.8g}\nExit: {px:.8g}\n"
                 f"TP: {tp:.8g}\nSL: {sl:.8g}\n\n"
@@ -174,24 +181,65 @@ def check_open_trades():
                 f"🔗 Live: {APP_URL}"
             )
 
-def generate_otp():
-    code = f"{secrets.randbelow(1000000):06d}"
+def client_ip():
+    # Render/other proxies normally provide the real client IP here.
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return (request.remote_addr or "unknown").strip()
+
+def cleanup_access():
+    now = time.time()
     with otp_lock:
-        otp_state["code"] = code
-        otp_state["expires"] = time.time() + OTP_TTL_SECONDS
-        otp_state["attempts"] = 0
-    telegram(
+        for ip in list(otp_by_ip):
+            if otp_by_ip[ip].get("expires", 0) <= now:
+                otp_by_ip.pop(ip, None)
+        for ip in list(authorized_ips):
+            if authorized_ips[ip] <= now:
+                authorized_ips.pop(ip, None)
+
+def ensure_otp_for_ip(ip):
+    """One active OTP per IP. Refresh does not generate a new code."""
+    cleanup_access()
+    now = time.time()
+    with otp_lock:
+        existing = otp_by_ip.get(ip)
+        if existing and existing.get("expires", 0) > now:
+            return existing["code"], False
+        code = f"{secrets.randbelow(1000000):06d}"
+        otp_by_ip[ip] = {
+            "code": code,
+            "expires": now + OTP_TTL_SECONDS,
+            "attempts": 0
+        }
+
+    telegram_async(
         f"🔐 RAZA SHAH SIGNAL — ACCESS REQUEST\n"
         f"Permission Code: {code}\n"
-        f"Valid for: {OTP_TTL_SECONDS//60} minutes\n"
+        f"IP: {ip}\n"
+        f"Code valid: {OTP_TTL_SECONDS//60} minutes\n"
+        f"After approval: 24 hours access\n"
         f"🔗 {APP_URL}"
     )
-    return code
+    return code, True
 
 def is_authorized():
-    return bool(flask_session.get("authorized"))
+    cleanup_access()
+    ip = client_ip()
+    now = time.time()
+
+    # Server-side per-IP permission
+    with otp_lock:
+        if authorized_ips.get(ip, 0) > now:
+            return True
+
+    # Same browser session fallback, also limited to 24h
+    auth_until = float(flask_session.get("authorized_until", 0) or 0)
+    auth_ip = flask_session.get("authorized_ip")
+    return auth_ip == ip and auth_until > now
 
 def login_html(message=""):
+
     return f"""<!doctype html>
 <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RAZA SHAH SIGNAL — Secure Access</title>
@@ -206,7 +254,7 @@ button{{margin-top:14px;padding:13px 24px;border:0;border-radius:10px;font-weigh
 <div class="msg">{message}</div>
 <form method="post" action="/verify"><input name="code" inputmode="numeric" maxlength="6" placeholder="000000" required>
 <br><button type="submit">OPEN APP</button></form>
-<p class="small">A fresh code is sent to the configured Telegram chat.</p>
+<p class="small">One code per IP. After approval, this IP stays authorized for 24 hours.</p>
 </div></body></html>"""
 
 def top_symbols():
@@ -395,7 +443,7 @@ def scan_once():
                 state["latest_signal"] = row
 
             p = performance()
-            telegram(
+            telegram_async(
                 f"🚨 TRADE READY — {symbol}\n"
                 f"Side: {side}\nScore: {score}/100 ✅\n"
                 f"Entry: {price:.8g}\nTP: {tp:.8g}\nSL: {sl:.8g}\n"
@@ -413,15 +461,36 @@ def scan_once():
         state["alerts_last_scan"] = alerts
         state["status"] = "Waiting for 85+ setup"
 
+def telegram_hourly_status_loop():
+    # First hourly status is sent after one full hour; startup message is handled by scanner_loop.
+    while True:
+        time.sleep(TELEGRAM_STATUS_INTERVAL)
+        try:
+            p = performance()
+            with state_lock:
+                st = dict(state)
+            telegram_async(
+                f"🟢 RAZA SHAH SIGNAL — 1 HOUR STATUS\n"
+                f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
+                f"Status: {st.get('status') or '—'}\n"
+                f"85+ Signals | Last scan alerts: {st.get('alerts_last_scan', 0)}\n"
+                f"Total Trades: {p['total_trades']} | Wins: {p['wins']} | Losses: {p['losses']}\n"
+                f"Winning: {p['win_rate']:.2f}% | Open: {p['open_trades']}\n"
+                f"🔗 {APP_URL}"
+            )
+        except Exception:
+            pass
+
 def scanner_loop():
     with state_lock:
         state["running"] = True
 
     p = performance()
-    telegram(
+    telegram_async(
         f"🟢 RAZA SHAH SIGNAL — LIVE ACTIVE\n"
         f"Scanner running | {MIN_SCORE}+ signals only\n"
         f"All-Time: {p['total_trades']} trades | {p['win_rate']:.2f}% winning\n"
+        f"Hourly status: ON\n"
         f"🔗 Live Dashboard: {APP_URL}"
     )
 
@@ -439,35 +508,65 @@ def scanner_loop():
             state["next_scan"] = datetime.fromtimestamp(time.time()+wait, timezone.utc).isoformat()
         time.sleep(wait)
 
-@app.route("/")
+@app.route("/", methods=["GET", "HEAD"])
 def home():
+    # Render health checks often use HEAD /. Never send OTP on HEAD.
+    if request.method == "HEAD":
+        return Response(status=200)
+
     if not is_authorized():
-        generate_otp()
-        return login_html("Permission code sent to Telegram.")
+        ip = client_ip()
+        _, created = ensure_otp_for_ip(ip)
+        msg = "Permission code sent to Telegram." if created else "Use the active Telegram code already sent for this IP."
+        return login_html(msg)
     return render_template("index.html")
 
 @app.route("/verify", methods=["POST"])
 def verify():
+    ip = client_ip()
     code = (request.form.get("code") or "").strip()
+    cleanup_access()
+    now = time.time()
+
     with otp_lock:
-        valid_code = otp_state.get("code")
-        expires = otp_state.get("expires") or 0
-        attempts = otp_state.get("attempts", 0)
-        if attempts >= OTP_MAX_ATTEMPTS:
-            return login_html("Too many attempts. Reload the page for a new code."), 429
-        otp_state["attempts"] = attempts + 1
-        ok = bool(valid_code and secrets.compare_digest(code, valid_code) and time.time() <= expires)
+        rec = otp_by_ip.get(ip)
+        if not rec or rec.get("expires", 0) <= now:
+            otp_by_ip.pop(ip, None)
+            return login_html("Code expired. Reload once to request a new code."), 401
+
+        if rec.get("attempts", 0) >= OTP_MAX_ATTEMPTS:
+            otp_by_ip.pop(ip, None)
+            return login_html("Too many attempts. Reload once for a new code."), 429
+
+        rec["attempts"] = rec.get("attempts", 0) + 1
+        ok = secrets.compare_digest(code, rec.get("code", ""))
+
         if ok:
-            otp_state["code"] = None
-            otp_state["expires"] = None
+            access_until = now + ACCESS_TTL_SECONDS
+            authorized_ips[ip] = access_until
+            otp_by_ip.pop(ip, None)
+
     if not ok:
-        return login_html("Invalid or expired code."), 401
-    flask_session["authorized"] = True
-    telegram("✅ RAZA SHAH SIGNAL — ACCESS GRANTED")
+        return login_html("Invalid code. Use the same active Telegram code."), 401
+
+    flask_session["authorized_ip"] = ip
+    flask_session["authorized_until"] = access_until
+    flask_session.permanent = True
+
+    telegram_async(
+        f"✅ RAZA SHAH SIGNAL — ACCESS GRANTED\n"
+        f"IP: {ip}\n"
+        f"Access valid: 24 hours\n"
+        f"🔗 {APP_URL}"
+    )
     return redirect(url_for("home"))
 
 @app.route("/logout")
 def logout():
+    ip = client_ip()
+    with otp_lock:
+        authorized_ips.pop(ip, None)
+        otp_by_ip.pop(ip, None)
     flask_session.clear()
     return redirect(url_for("home"))
 
@@ -500,6 +599,7 @@ def sw():
     return send_from_directory("static","sw.js", mimetype="application/javascript")
 
 threading.Thread(target=scanner_loop, daemon=True).start()
+threading.Thread(target=telegram_hourly_status_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
