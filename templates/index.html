@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RAZA SIGNAL">
+  <meta name="theme-color" content="#06110c">
+
+  <title>RAZA SHAH SIGNAL</title>
+
+  <style>
+    :root{
+      --bg:#06110c;
+      --card:#0c1b13;
+      --line:#1c3929;
+      --green:#39f58a;
+      --red:#ff5263;
+      --text:#f4fff8;
+      --muted:#91aa9b;
+    }
+
+    *{
+      box-sizing:border-box;
+      -webkit-tap-highlight-color:transparent;
+    }
+
+    html,body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    }
+
+    body{
+      padding:
+        env(safe-area-inset-top)
+        0
+        env(safe-area-inset-bottom);
+    }
+
+    .app{
+      max-width:680px;
+      margin:auto;
+      padding:16px;
+    }
+
+    .head{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      margin-bottom:18px;
+    }
+
+    .brand{
+      font-weight:900;
+      letter-spacing:1px;
+      font-size:18px;
+    }
+
+    .live{
+      padding:7px 11px;
+      border:1px solid #265a40;
+      border-radius:20px;
+      font-size:12px;
+      color:var(--green);
+    }
+
+    .card{
+      background:linear-gradient(180deg,#0d1d15,#09150f);
+      border:1px solid var(--line);
+      border-radius:22px;
+      padding:18px;
+      margin-bottom:14px;
+    }
+
+    .hero{
+      text-align:center;
+      padding:28px 18px;
+    }
+
+    .coin{
+      color:var(--muted);
+      font-size:14px;
+    }
+
+    .signal{
+      font-size:38px;
+      font-weight:900;
+      margin:10px 0;
+      color:var(--green);
+    }
+
+    .score{
+      font-size:52px;
+      font-weight:900;
+      color:var(--green);
+    }
+
+    .scoreLabel{
+      color:var(--muted);
+      font-size:13px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+
+    .box{
+      background:#08130e;
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:14px;
+    }
+
+    .label{
+      color:var(--muted);
+      font-size:12px;
+      margin-bottom:6px;
+    }
+
+    .value{
+      font-size:18px;
+      font-weight:800;
+    }
+
+    .green{color:var(--green);}
+    .red{color:var(--red);}
+
+    .bar{
+      height:9px;
+      background:#14251b;
+      border-radius:10px;
+      overflow:hidden;
+      margin-top:8px;
+    }
+
+    .fill{
+      height:100%;
+      width:85%;
+      background:var(--green);
+    }
+
+    .status{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      font-size:13px;
+      color:var(--muted);
+    }
+
+    .dot{
+      width:9px;
+      height:9px;
+      border-radius:50%;
+      background:var(--green);
+      box-shadow:0 0 12px var(--green);
+    }
+
+    .footer{
+      text-align:center;
+      color:var(--muted);
+      font-size:11px;
+      padding:8px;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="app">
+
+  <div class="head">
+    <div class="brand">RAZA SHAH SIGNAL</div>
+    <div class="live">● LIVE</div>
+  </div>
+
+  <div class="card hero">
+    <div class="coin" id="symbol">WAITING FOR LIVE SIGNAL</div>
+
+    <div class="signal" id="signal">
+      SCANNING
+    </div>
+
+    <div class="score" id="score">
+      85+
+    </div>
+
+    <div class="scoreLabel">
+      SIGNAL SCORE REQUIRED
+    </div>
+
+    <div class="bar">
+      <div class="fill" id="scoreBar"></div>
+    </div>
+  </div>
+
+  <div class="grid">
+
+    <div class="box">
+      <div class="label">ENTRY</div>
+      <div class="value" id="entry">--</div>
+    </div>
+
+    <div class="box">
+      <div class="label">DIRECTION</div>
+      <div class="value green" id="direction">WAIT</div>
+    </div>
+
+    <div class="box">
+      <div class="label">TAKE PROFIT</div>
+      <div class="value green" id="tp">--</div>
+    </div>
+
+    <div class="box">
+      <div class="label">STOP LOSS</div>
+      <div class="value red" id="sl">--</div>
+    </div>
+
+    <div class="box">
+      <div class="label">ORDER BOOK</div>
+      <div class="value" id="book">SCANNING</div>
+    </div>
+
+    <div class="box">
+      <div class="label">VOLUME FLOW</div>
+      <div class="value" id="flow">SCANNING</div>
+    </div>
+
+    <div class="box">
+      <div class="label">OPEN INTEREST</div>
+      <div class="value" id="oi">--</div>
+    </div>
+
+    <div class="box">
+      <div class="label">SPREAD</div>
+      <div class="value" id="spread">--</div>
+    </div>
+
+  </div>
+
+  <div class="card">
+    <div class="status">
+      <div class="dot"></div>
+      <div id="statusText">
+        AI SCANNER ACTIVE — WAITING FOR 85+ SETUP
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Binance Futures • Signal Only • 85+ Filter
+  </div>
+
+</div>
+
+<script>
+
+async function refreshSignal(){
+
+  try{
+
+    const r = await fetch('/api/signal', {
+      cache:'no-store'
+    });
+
+    if(!r.ok) return;
+
+    const d = await r.json();
+
+    if(d.symbol)
+      document.getElementById('symbol').textContent = d.symbol;
+
+    if(d.signal){
+      const sig = d.signal.toUpperCase();
+
+      document.getElementById('signal').textContent = sig;
+
+      const bullish =
+        sig.includes('BUY') ||
+        sig.includes('LONG');
+
+      document.getElementById('signal').style.color =
+        bullish ? '#39f58a' : '#ff5263';
+
+      document.getElementById('direction').textContent =
+        bullish ? 'BUY / LONG' : 'SELL / SHORT';
+
+      document.getElementById('direction').style.color =
+        bullish ? '#39f58a' : '#ff5263';
+    }
+
+    if(d.score !== undefined){
+      document.getElementById('score').textContent =
+        d.score + '/100';
+
+      document.getElementById('scoreBar').style.width =
+        Math.min(100,d.score) + '%';
+    }
+
+    if(d.entry !== undefined)
+      document.getElementById('entry').textContent = d.entry;
+
+    if(d.tp !== undefined)
+      document.getElementById('tp').textContent = d.tp;
+
+    if(d.sl !== undefined)
+      document.getElementById('sl').textContent = d.sl;
+
+    if(d.order_book !== undefined)
+      document.getElementById('book').textContent = d.order_book;
+
+    if(d.volume_flow !== undefined)
+      document.getElementById('flow').textContent = d.volume_flow;
+
+    if(d.oi !== undefined)
+      document.getElementById('oi').textContent = d.oi;
+
+    if(d.spread !== undefined)
+      document.getElementById('spread').textContent = d.spread;
+
+    document.getElementById('statusText').textContent =
+      'LIVE SCANNER ACTIVE — 85+ SIGNALS ONLY';
+
+  }catch(e){
+
+    document.getElementById('statusText').textContent =
+      'SCANNER CONNECTING...';
+
+  }
+}
+
+refreshSignal();
+setInterval(refreshSignal,5000);
+
+</script>
+
+</body>
+</html>
