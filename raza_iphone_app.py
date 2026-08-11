@@ -2,6 +2,7 @@
 import os, time, csv, threading, secrets
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from flask import Flask, jsonify, render_template, send_from_directory, request, session as flask_session, redirect, url_for, Response
@@ -25,6 +26,9 @@ OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 ACCESS_TTL_SECONDS = int(os.getenv("ACCESS_TTL_SECONDS", "86400"))  # 24 hours
 TELEGRAM_STATUS_INTERVAL = int(os.getenv("TELEGRAM_STATUS_INTERVAL", "3600"))  # 1 hour
 SIGNAL_COOLDOWN_SECONDS = int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "14400"))  # 4 hours per symbol/side
+LIGHT_SCAN_WORKERS = int(os.getenv("LIGHT_SCAN_WORKERS", "20"))
+DEEP_SCAN_WORKERS = int(os.getenv("DEEP_SCAN_WORKERS", "10"))
+SCAN_HTTP_TIMEOUT = float(os.getenv("SCAN_HTTP_TIMEOUT", "8"))
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -58,6 +62,8 @@ state = {
     "alerts_last_scan": 0,
     "latest_signal": None,
     "best_candidate": None,
+    "scan_progress": "0/0",
+    "last_scan_seconds": None,
     "last_error": None
 }
 
@@ -65,7 +71,8 @@ otp_lock = threading.Lock()
 otp_by_ip = {}
 authorized_ips = {}
 
-def get_json(path, params=None, timeout=12):
+def get_json(path, params=None, timeout=None):
+    timeout = SCAN_HTTP_TIMEOUT if timeout is None else timeout
     r = session.get(BASE_URL + path, params=params or {}, timeout=timeout)
     r.raise_for_status()
     return r.json()
@@ -440,53 +447,151 @@ def candidate_payload(symbol, lm, side, score, delta, buy, sell, spread, book, o
         "status": "TRADE READY" if (score >= MIN_SCORE and confirmed) else "FORMING"
     }
 
+
+def _light_scan_one(symbol):
+    try:
+        lm = light_metrics(symbol)
+        if not lm:
+            return None
+        rank = lm["vol_ratio"] * 3 + abs(lm["momentum"]) * 10000
+        return (rank, symbol, lm, None)
+    except Exception as e:
+        return (None, symbol, None, str(e))
+
+def _deep_scan_one(item):
+    _, symbol, lm = item
+    try:
+        dm = depth_metrics(symbol)
+        if not dm:
+            return {"symbol": symbol, "error": "No order book"}
+        spread, book = dm
+        delta, buy, sell = flow_metrics(symbol)
+        oi = oi_change_pct(symbol)
+        side, score = build_score(lm, delta, spread, book, oi)
+
+        if not side:
+            return {
+                "symbol": symbol,
+                "side": None,
+                "score": 0,
+                "error": None
+            }
+
+        c = candidate_payload(
+            symbol, lm, side, score,
+            delta, buy, sell, spread, book, oi
+        )
+        return {
+            "symbol": symbol,
+            "side": side,
+            "score": score,
+            "candidate": c,
+            "delta": delta,
+            "buy": buy,
+            "sell": sell,
+            "spread": spread,
+            "book": book,
+            "oi": oi,
+            "lm": lm,
+            "error": None
+        }
+    except Exception as e:
+        return {"symbol": symbol, "error": str(e)}
+
+
+def scan_log(message):
+    print(f"[SCANNER] {message}", flush=True)
+
 def scan_once():
+    scan_start = time.time()
+    scan_log("SCAN START")
+
     with state_lock:
         state["status"] = f"Scanning Top {TOP_COINS}..."
         state["last_error"] = None
+        state["scan_progress"] = "0/0"
 
+    scan_log("Checking open trades...")
     check_open_trades()
-    candidates = []
 
-    for symbol in top_symbols():
-        try:
-            lm = light_metrics(symbol)
-            if not lm:
-                continue
-            rank = lm["vol_ratio"] * 3 + abs(lm["momentum"]) * 10000
-            candidates.append((rank, symbol, lm))
-        except Exception:
-            pass
+    scan_log("Loading Top 100 Binance Futures symbols...")
+    symbols = top_symbols()
+    scan_log(f"TOP SYMBOLS LOADED: {len(symbols)}")
 
-    candidates.sort(reverse=True, key=lambda x: x[0])
+    with state_lock:
+        state["scan_progress"] = f"0/{len(symbols)}"
+
+    light_candidates = []
+    light_errors = []
+
+    with ThreadPoolExecutor(max_workers=max(1, LIGHT_SCAN_WORKERS)) as pool:
+        futures = {pool.submit(_light_scan_one, symbol): symbol for symbol in symbols}
+        done = 0
+
+        for future in as_completed(futures):
+            done += 1
+            if done == 1 or done % 10 == 0 or done == len(symbols):
+                scan_log(f"LIGHT SCAN: {done}/{len(symbols)}")
+            result = future.result()
+
+            if result:
+                rank, symbol, lm, err = result
+                if rank is not None and lm is not None:
+                    light_candidates.append((rank, symbol, lm))
+                elif err:
+                    light_errors.append(f"{symbol}: {err}")
+
+            with state_lock:
+                state["scan_progress"] = f"{done}/{len(symbols)}"
+
+    light_candidates.sort(reverse=True, key=lambda x: x[0])
+    scan_log(f"LIGHT SCAN COMPLETE: {len(light_candidates)} candidates")
+    deep_items = light_candidates[:DEEP_CHECK]
+    scan_log(f"DEEP SCAN START: {len(deep_items)} candidates")
 
     alerts = 0
     best = None
+    deep_errors = []
 
-    for _, symbol, lm in candidates[:DEEP_CHECK]:
-        try:
-            dm = depth_metrics(symbol)
-            if not dm:
+    with ThreadPoolExecutor(max_workers=max(1, DEEP_SCAN_WORKERS)) as pool:
+        futures = {pool.submit(_deep_scan_one, item): item[1] for item in deep_items}
+
+        deep_done = 0
+        for future in as_completed(futures):
+            deep_done += 1
+            if deep_done == 1 or deep_done % 5 == 0 or deep_done == len(deep_items):
+                scan_log(f"DEEP SCAN: {deep_done}/{len(deep_items)}")
+            result = future.result()
+            if not result:
                 continue
 
-            spread, book = dm
-            delta, buy, sell = flow_metrics(symbol)
-            oi = oi_change_pct(symbol)
-            side, score = build_score(lm, delta, spread, book, oi)
+            if result.get("error"):
+                deep_errors.append(f"{result.get('symbol')}: {result['error']}")
+                continue
+
+            side = result.get("side")
+            score = result.get("score", 0)
 
             if not side:
                 continue
 
-            c = candidate_payload(
-                symbol, lm, side, score,
-                delta, buy, sell, spread, book, oi
-            )
+            c = result["candidate"]
 
             if best is None or score > best["score"]:
                 best = c
+                scan_log(f"BEST CANDIDATE: {best['symbol']} {best['signal']} {best['score']}/100")
+                with state_lock:
+                    state["best_candidate"] = best
+                    state["status"] = (
+                        f"Best forming: {best['symbol']} "
+                        f"{'LONG' if best['signal'] == 'BUY' else 'SHORT'} "
+                        f"{best['score']}/100"
+                    )
 
             if score < MIN_SCORE or not c["hard_confirm"]:
                 continue
+
+            symbol = result["symbol"]
 
             if has_recent_or_open_trade(symbol, side):
                 continue
@@ -497,17 +602,18 @@ def scan_once():
                 "signal": side,
                 "score": score,
                 "price": c["price"],
-                "flow_delta": delta,
-                "buy_usd_60s": buy,
-                "sell_usd_60s": sell,
-                "spread_bps": spread,
-                "book_imb": book,
-                "trend_5m": lm["trend"],
-                "oi_change_pct": oi,
+                "flow_delta": result["delta"],
+                "buy_usd_60s": result["buy"],
+                "sell_usd_60s": result["sell"],
+                "spread_bps": result["spread"],
+                "book_imb": result["book"],
+                "trend_5m": result["lm"]["trend"],
+                "oi_change_pct": result["oi"],
                 "tp": c["tp"],
                 "sl": c["sl"]
             }
 
+            scan_log(f"TRADE READY: {symbol} {side} {score}/100")
             save_signal(row)
             add_open_trade(row)
 
@@ -524,24 +630,25 @@ def scan_once():
                 f"Entry: {c['price']:.8g}\n"
                 f"TP: {c['tp']:.8g}\n"
                 f"SL: {c['sl']:.8g}\n"
-                f"Flow: {delta:+.2f}\n"
-                f"Book: {book:+.2f}\n"
-                f"Spread: {spread:.2f} bps\n"
-                f"OI: {oi:+.2f}%\n\n"
+                f"Flow: {result['delta']:+.2f}\n"
+                f"Book: {result['book']:+.2f}\n"
+                f"Spread: {result['spread']:.2f} bps\n"
+                f"OI: {result['oi']:+.2f}%\n\n"
                 f"📊 Closed Trades: {p['total_trades']} | Win Rate: {p['win_rate']:.2f}%\n"
                 f"🔗 Live: {APP_URL}"
             )
 
             alerts += 1
-        except Exception:
-            pass
 
     now = datetime.now(timezone.utc)
+    elapsed = round(time.time() - scan_start, 2)
+    scan_log(f"SCAN COMPLETE in {elapsed}s | alerts={alerts} | best={best['symbol'] if best else 'NONE'}")
 
     with state_lock:
         state["best_candidate"] = best
         state["last_scan"] = now.isoformat()
         state["alerts_last_scan"] = alerts
+        state["last_scan_seconds"] = elapsed
 
         if alerts:
             state["status"] = f"{alerts} verified 85+ trade ready"
@@ -553,6 +660,10 @@ def scan_once():
             )
         else:
             state["status"] = "Waiting for 85+ setup"
+
+        if not best and (light_errors or deep_errors):
+            errors = (light_errors + deep_errors)[:3]
+            state["last_error"] = " | ".join(errors)
 
 
 def telegram_hourly_status_loop():
@@ -578,6 +689,7 @@ def telegram_hourly_status_loop():
                 f"Status: {st.get('status') or '—'}\n"
                 f"{best_line}\n"
                 f"85+ Signals | Last scan alerts: {st.get('alerts_last_scan', 0)}\n"
+                f"Last scan: {st.get('last_scan_seconds', '—')}s | Progress: {st.get('scan_progress', '—')}\n"
                 f"Total Trades: {p['total_trades']} | Wins: {p['wins']} | Losses: {p['losses']}\n"
                 f"Winning: {p['win_rate']:.2f}% | Open: {p['open_trades']}\n"
                 f"🔗 {APP_URL}"
