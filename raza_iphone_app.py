@@ -292,7 +292,10 @@ def api_status():
     x["telegram"] = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
     x["min_score"] = MIN_SCORE
     return jsonify(x)
-
+@app.route("/api/signal")
+def api_signal():
+    with state_lock:
+        return jsonify(dict(state))
 @app.route("/manifest.webmanifest")
 def manifest():
     return send_from_directory("static","manifest.webmanifest", mimetype="application/manifest+json")
