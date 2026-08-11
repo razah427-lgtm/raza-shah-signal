@@ -304,6 +304,7 @@ def manifest():
 def sw():
     return send_from_directory("static","sw.js", mimetype="application/javascript")
 
+threading.Thread(target=scanner_loop, daemon=True).start()
+
 if __name__ == "__main__":
-    threading.Thread(target=scanner_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")), debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
