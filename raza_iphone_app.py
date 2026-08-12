@@ -3012,7 +3012,8 @@ def api_status():
     x["performance"] = (
         performance()
     )
-
+    x["forming_performance"] = forming_performance()
+    x["forming_history"] = list(reversed(forming_rows()[-20:]))
     # Final dashboard contract. Exchange can stay internal while the UI hides its name.
     x["dashboard"] = {
         "risk_rules": {
