@@ -2,363 +2,693 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-
-<meta name="viewport"
-content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07110d">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="RAZA Signal">
-<meta name="theme-color" content="#06110c">
 
 <title>RAZA SHAH SIGNAL</title>
 
 <style>
 :root{
-  --bg:#06110c;
-  --card:#0c1b13;
-  --line:#1c3929;
-  --green:#62f59a;
-  --red:#ff6a7a;
-  --yellow:#ffd666;
-  --blue:#67b7ff;
-  --txt:#f3fff8;
-  --muted:#91a89b;
+  --bg:#07110d;
+  --panel:#0b1712;
+  --panel2:#08110d;
+  --line:#1b3428;
+  --txt:#f4fff8;
+  --muted:#8da397;
+  --green:#42ef8d;
+  --red:#ff525f;
+  --yellow:#f6bb24;
+  --cyan:#2dd4bf;
+  --purple:#b083ff;
 }
 
 *{
   box-sizing:border-box;
-  -webkit-tap-highlight-color:transparent;
 }
 
 html,body{
   margin:0;
   background:var(--bg);
   color:var(--txt);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
 
 body{
-  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  min-height:100vh;
 }
 
 .app{
-  max-width:760px;
+  width:min(1600px,100%);
   margin:auto;
-  padding:14px 14px 36px;
+  padding:16px;
 }
 
-.head{
+/* =========================================================
+   TOP HEADER
+========================================================= */
+
+.top{
   display:flex;
-  align-items:center;
   justify-content:space-between;
-  gap:10px;
-  margin:6px 0 14px;
+  align-items:center;
+  gap:12px;
+  margin-bottom:12px;
 }
 
 .brand{
-  font-weight:900;
-  letter-spacing:.6px;
-  font-size:18px;
+  font-size:24px;
+  font-weight:950;
+  letter-spacing:.5px;
 }
 
 .live{
-  font-size:12px;
-  border:1px solid #265a40;
-  background:#0f2a1b;
-  color:#7cf4aa;
+  color:var(--green);
+  border:1px solid #1d6b43;
+  background:#0c2819;
   border-radius:999px;
-  padding:7px 10px;
-  white-space:nowrap;
+  padding:6px 11px;
+  font-weight:850;
+  font-size:12px;
 }
+
+/* =========================================================
+   WARNING
+========================================================= */
+
+.warning{
+  border:1px solid #705515;
+  background:#1a1609;
+  color:#ffd66b;
+  padding:11px 15px;
+  border-radius:10px;
+  font-size:12px;
+  font-weight:800;
+  text-align:center;
+  margin-bottom:13px;
+}
+
+/* =========================================================
+   GLOBAL CARDS
+========================================================= */
 
 .card{
-  background:linear-gradient(180deg,#0d1d15,#09150f);
+  background:
+  linear-gradient(
+    180deg,
+    #0c1813,
+    #08110d
+  );
   border:1px solid var(--line);
-  border-radius:22px;
-  padding:18px;
-  margin-bottom:13px;
-  box-shadow:0 18px 40px #0007;
-}
-
-.hero{
-  text-align:center;
-  padding:24px 18px;
-}
-
-.readyLabel{
-  color:var(--muted);
-  font-size:11px;
-  letter-spacing:1px;
-  font-weight:800;
-  margin-bottom:7px;
-}
-
-.coin{
-  font-size:27px;
-  font-weight:950;
-}
-
-.side{
-  font-size:40px;
-  font-weight:950;
-  margin:8px 0;
-}
-
-.buy{color:var(--green);}
-.sell{color:var(--red);}
-.forming{color:var(--yellow);}
-.wait{color:#c6d4cc;}
-
-.entry{
-  color:var(--muted);
-  font-size:14px;
-}
-
-.scorebar{
-  height:9px;
-  background:#14281d;
-  border-radius:99px;
-  overflow:hidden;
-  margin:20px 0 14px;
-}
-
-.scorefill{
-  height:100%;
-  width:0;
-  background:linear-gradient(90deg,#39d976,#7af8aa);
-  transition:.35s;
-}
-
-.grid,
-.perf-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:10px;
-}
-
-.tile,
-.perf-tile{
-  background:#08130e;
-  border:1px solid #173123;
-  border-radius:16px;
-  padding:13px;
+  border-radius:14px;
+  padding:14px;
+  box-shadow:0 12px 30px #0005;
 }
 
 .lab{
   font-size:10px;
-  letter-spacing:.7px;
   text-transform:uppercase;
+  letter-spacing:.6px;
   color:var(--muted);
-}
-
-.val{
-  font-size:18px;
-  font-weight:850;
-  margin-top:5px;
-  word-break:break-word;
-}
-
-.good{color:var(--green);}
-.bad{color:var(--red);}
-.yellow{color:var(--yellow);}
-.blue{color:var(--blue);}
-
-.tradeStatus{
-  margin-top:14px;
-  padding:13px;
-  background:#08130e;
-  border:1px solid #173123;
-  border-radius:16px;
-}
-
-.bigStatus{
-  display:block;
-  margin-top:5px;
-  font-size:16px;
-  font-weight:900;
-}
-
-h3{
-  font-size:16px;
-  margin:0 0 12px;
-}
-
-.row{
-  display:flex;
-  justify-content:space-between;
-  gap:12px;
-  padding:11px 0;
-  border-bottom:1px solid #173123;
-}
-
-.row:last-child{
-  border-bottom:0;
 }
 
 .muted{
   color:var(--muted);
-  font-size:13px;
 }
 
-.statusline{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  margin-top:12px;
-  padding-top:12px;
-  border-top:1px solid #173123;
+.good{
+  color:var(--green)!important;
 }
 
-.dot{
-  display:inline-block;
-  width:9px;
-  height:9px;
-  border-radius:50%;
-  background:var(--green);
-  margin-right:6px;
+.bad{
+  color:var(--red)!important;
 }
 
-.perf-value{
-  font-size:24px;
-  font-weight:950;
-  margin-top:6px;
+.yellow{
+  color:var(--yellow)!important;
 }
 
-/* CHART */
+.purple{
+  color:var(--purple)!important;
+}
 
-.chartTop{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
+/* =========================================================
+   STATUS BAR
+========================================================= */
+
+.statusGrid{
+  display:grid;
+  grid-template-columns:
+    repeat(6,1fr);
   gap:10px;
   margin-bottom:12px;
 }
 
-.chartSymbol{
-  color:var(--green);
-  font-weight:900;
-  font-size:12px;
+.statusCard{
+  min-height:75px;
 }
 
-.searchBar{
-  display:flex;
-  gap:8px;
+.statusVal{
+  font-size:17px;
+  font-weight:900;
+  margin-top:5px;
+}
+
+/* =========================================================
+   MAIN TOP AREA
+========================================================= */
+
+.mainGrid{
+  display:grid;
+  grid-template-columns:
+    1.05fr
+    1.5fr
+    .95fr;
+  gap:12px;
   margin-bottom:12px;
 }
 
-.searchBar input{
-  flex:1;
-  min-width:0;
-  background:#08130e;
-  border:1px solid #244431;
-  border-radius:12px;
-  padding:12px;
-  color:white;
-  font-size:15px;
-  outline:none;
-}
+/* =========================================================
+   CURRENT SETUP
+========================================================= */
 
-.searchBar button{
-  border:0;
-  background:#57e88c;
-  color:#031108;
+.sectionTitle{
+  font-size:13px;
   font-weight:900;
-  border-radius:12px;
-  padding:0 15px;
-  cursor:pointer;
+  margin-bottom:10px;
 }
 
-.chartWrap{
-  width:100%;
-  height:470px;
-  background:#08130e;
+.setupTop{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  flex-wrap:wrap;
+}
+
+.coin{
+  font-size:30px;
+  font-weight:950;
+}
+
+.sideBadge,
+.riskBadge{
+  display:inline-flex;
+  align-items:center;
+  border-radius:8px;
+  padding:6px 9px;
+  font-weight:900;
+  font-size:11px;
+}
+
+.sideLong{
+  color:var(--green);
+  background:#0c2b1a;
+  border:1px solid #1e603a;
+}
+
+.sideShort{
+  color:var(--red);
+  background:#2d1117;
+  border:1px solid #6e2630;
+}
+
+.risky{
+  color:var(--red);
+  background:#261115;
+  border:1px solid #70232c;
+}
+
+.medium{
+  color:var(--yellow);
+  background:#211b0c;
+  border:1px solid #775b14;
+}
+
+.strong{
+  color:var(--green);
+  background:#0a2417;
+  border:1px solid #1f7547;
+}
+
+.scoreBox{
+  margin-left:auto;
+  display:flex;
+  align-items:flex-end;
+  gap:4px;
+}
+
+.scoreNum{
+  font-size:45px;
+  font-weight:950;
+}
+
+.score100{
+  color:#b8c6be;
+  font-size:18px;
+  margin-bottom:6px;
+}
+
+.setupSub{
+  font-size:12px;
+  color:var(--muted);
+  margin:5px 0 10px;
+}
+
+.progress{
+  height:7px;
+  border-radius:99px;
   overflow:hidden;
-  border-radius:16px;
-  border:1px solid #173123;
+  background:#17261f;
+  margin-bottom:13px;
 }
 
-#tvChart{
+.progressFill{
+  width:0;
+  height:100%;
+  background:
+  linear-gradient(
+    90deg,
+    #ff4655 0%,
+    #ffb800 70%,
+    #35ed88 100%
+  );
+  transition:.3s;
+}
+
+.metricGrid{
+  display:grid;
+  grid-template-columns:
+    repeat(4,1fr);
+  gap:7px;
+}
+
+.metric{
+  background:var(--panel2);
+  border:1px solid #183025;
+  border-radius:9px;
+  padding:9px;
+}
+
+.metricVal{
+  font-size:14px;
+  font-weight:850;
+  margin-top:4px;
+  overflow-wrap:anywhere;
+}
+
+/* =========================================================
+   RSI HEATMAP
+========================================================= */
+
+.heatmapWrap{
+  position:relative;
+  height:470px;
+  border-radius:10px;
+  border:1px solid #183025;
+  overflow:hidden;
+  background:#07100c;
+}
+
+.heatZone{
+  position:absolute;
+  left:0;
+  width:100%;
+}
+
+.zoneOB{
+  top:0;
+  height:33.33%;
+  background:
+  linear-gradient(
+    180deg,
+    rgba(255,82,95,.35),
+    rgba(255,82,95,.16)
+  );
+}
+
+.zoneMid{
+  top:33.33%;
+  height:33.34%;
+  background:
+  rgba(255,255,255,.025);
+}
+
+.zoneOS{
+  bottom:0;
+  height:33.33%;
+  background:
+  linear-gradient(
+    180deg,
+    rgba(45,212,191,.08),
+    rgba(45,212,191,.28)
+  );
+}
+
+.zoneLabel{
+  position:absolute;
+  right:14px;
+  font-size:20px;
+  font-weight:900;
+  opacity:.45;
+}
+
+.labelOB{
+  top:13%;
+  color:#ff818c;
+}
+
+.labelStrong{
+  top:42%;
+  color:#ddd;
+}
+
+.labelOS{
+  bottom:13%;
+  color:#5eeac0;
+}
+
+.rsiLine{
+  position:absolute;
+  left:0;
+  width:100%;
+  height:1px;
+  background:#ffffff19;
+}
+
+.line70{
+  top:33.33%;
+}
+
+.line50{
+  top:55.55%;
+  border-top:1px dashed #f6a82199;
+}
+
+.line30{
+  top:77.77%;
+}
+
+.avgLabel{
+  position:absolute;
+  right:12px;
+  top:54%;
+  color:#f5a623;
+  font-size:11px;
+  font-weight:850;
+}
+
+.heatDot{
+  position:absolute;
+  transform:
+    translate(-50%,-50%);
+  font-size:9px;
+  text-align:center;
+  min-width:45px;
+}
+
+.heatDot .dot{
+  width:10px;
+  height:10px;
+  border-radius:50%;
+  margin:2px auto 0;
+  box-shadow:0 0 8px currentColor;
+}
+
+.dotLong{
+  color:#3dd7bd;
+}
+
+.dotShort{
+  color:#ff5260;
+}
+
+.heatAxis{
+  position:absolute;
+  left:7px;
+  font-size:9px;
+  color:#a8b6ae;
+}
+
+.a90{top:3%}
+.a70{top:31%}
+.a50{top:53%}
+.a30{top:75%}
+.a10{bottom:2%}
+
+/* =========================================================
+   LIQUIDITY
+========================================================= */
+
+.liqGrid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+}
+
+.liqHeat{
+  height:290px;
+  border:1px solid #183025;
+  border-radius:9px;
+  overflow:hidden;
+  background:#07100c;
+}
+
+.sellHeat{
+  height:50%;
+  background:
+  repeating-linear-gradient(
+    to bottom,
+    rgba(255,65,75,.15) 0px,
+    rgba(255,65,75,.15) 3px,
+    rgba(255,65,75,.3) 4px,
+    rgba(255,65,75,.3) 5px
+  );
+}
+
+.buyHeat{
+  height:50%;
+  background:
+  repeating-linear-gradient(
+    to bottom,
+    rgba(45,220,145,.28) 0px,
+    rgba(45,220,145,.28) 3px,
+    rgba(45,220,145,.1) 4px,
+    rgba(45,220,145,.1) 5px
+  );
+}
+
+.orderbook{
+  font-size:11px;
+}
+
+.bookRow{
+  display:grid;
+  grid-template-columns:
+    1fr 1fr;
+  padding:4px 2px;
+  border-bottom:1px solid #173025;
+}
+
+.liqBottom{
+  display:grid;
+  grid-template-columns:
+    repeat(3,1fr);
+  gap:7px;
+  margin-top:9px;
+}
+
+.liqBottom .metric{
+  text-align:center;
+}
+
+/* =========================================================
+   WATCHLIST TABLES
+========================================================= */
+
+.watchGrid{
+  display:grid;
+  grid-template-columns:
+    1fr 1fr;
+  gap:12px;
+  margin-bottom:12px;
+}
+
+.tableWrap{
+  overflow:auto;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:11px;
+}
+
+th,
+td{
+  padding:7px 6px;
+  border-bottom:1px solid #173025;
+  white-space:nowrap;
+  text-align:left;
+}
+
+th{
+  color:var(--muted);
+  font-weight:750;
+}
+
+.riskPill{
+  padding:3px 6px;
+  border-radius:6px;
+  font-size:9px;
+  font-weight:900;
+}
+
+.watchGraph{
+  height:100px;
+  margin-top:9px;
+  border:1px solid #183025;
+  border-radius:9px;
+  overflow:hidden;
+  background:#07100c;
+}
+
+.watchGraph svg{
   width:100%;
   height:100%;
 }
 
-.chartLevels{
+/* =========================================================
+   PERFORMANCE
+========================================================= */
+
+.performanceGrid{
   display:grid;
-  grid-template-columns:repeat(3,1fr);
-  gap:8px;
-  margin-top:10px;
+  grid-template-columns:
+    1fr 1fr 1fr;
+  gap:12px;
+  margin-bottom:12px;
 }
 
-.level{
-  background:#08130e;
-  border:1px solid #173123;
-  border-radius:12px;
-  padding:10px 5px;
-  text-align:center;
+.perfInner{
+  display:grid;
+  grid-template-columns:
+    repeat(3,1fr);
+  gap:7px;
 }
 
-.level strong{
-  display:block;
-  margin-top:4px;
-  font-size:14px;
-  overflow-wrap:anywhere;
-}
-
-.badge{
-  font-size:11px;
-  font-weight:900;
-  padding:5px 8px;
+.perfTile{
+  border:1px solid #183025;
+  background:#08110d;
   border-radius:9px;
+  padding:9px;
 }
 
-.bBuy{
-  background:#123b25;
-  color:var(--green);
+.perfValue{
+  font-size:22px;
+  font-weight:950;
+  margin-top:4px;
 }
 
-.bSell{
-  background:#421824;
-  color:#ff8290;
+.strategyRow{
+  display:grid;
+  grid-template-columns:
+    1.5fr
+    repeat(4,.6fr);
+  gap:5px;
+  padding:8px 0;
+  border-bottom:1px solid #173025;
+  font-size:11px;
 }
 
-.foot{
+.strategyHead{
+  color:var(--muted);
+  font-size:10px;
+}
+
+/* =========================================================
+   HISTORY
+========================================================= */
+
+.history{
+  margin-bottom:12px;
+}
+
+/* =========================================================
+   FOOTER
+========================================================= */
+
+.footer{
   text-align:center;
-  color:#6f8579;
+  color:#6c8075;
   font-size:10px;
   padding:8px;
 }
 
-@media(max-width:480px){
+/* =========================================================
+   RESPONSIVE
+========================================================= */
+
+@media(max-width:1200px){
+
+  .mainGrid{
+    grid-template-columns:
+      1fr 1fr;
+  }
+
+  .liqCard{
+    grid-column:
+      1 / -1;
+  }
+
+}
+
+@media(max-width:900px){
+
+  .statusGrid{
+    grid-template-columns:
+      repeat(3,1fr);
+  }
+
+  .mainGrid,
+  .watchGrid,
+  .performanceGrid{
+    grid-template-columns:1fr;
+  }
+
+}
+
+@media(max-width:560px){
+
   .app{
-    padding-left:10px;
-    padding-right:10px;
-  }
-
-  .card{
-    padding:14px;
-    border-radius:18px;
-  }
-
-  .side{
-    font-size:34px;
-  }
-
-  .coin{
-    font-size:23px;
-  }
-
-  .val{
-    font-size:15px;
-  }
-
-  .chartWrap{
-    height:390px;
+    padding:8px;
   }
 
   .brand{
-    font-size:14px;
+    font-size:17px;
   }
+
+  .statusGrid{
+    grid-template-columns:
+      1fr 1fr;
+  }
+
+  .metricGrid{
+    grid-template-columns:
+      1fr 1fr;
+  }
+
+  .coin{
+    font-size:24px;
+  }
+
+  .scoreNum{
+    font-size:34px;
+  }
+
+  .heatmapWrap{
+    height:390px;
+  }
+
 }
 </style>
 </head>
@@ -367,119 +697,205 @@ h3{
 
 <div class="app">
 
-  <div class="head">
-    <div class="brand">⚡ RAZA SHAH SIGNAL</div>
-    <div class="live" id="live">● CONNECTING</div>
+<!-- ======================================================
+HEADER
+======================================================= -->
+
+<div class="top">
+
+  <div class="brand">
+    ⚡ RAZA SHAH SIGNAL
+  </div>
+
+  <div
+    class="live"
+    id="live"
+  >
+    ● CONNECTING
+  </div>
+
+</div>
+
+
+<!-- ======================================================
+WARNING
+======================================================= -->
+
+<div class="warning">
+
+⚠️ Trading involves significant risk. All signals are provided
+for informational purposes only. Always assess your own risk
+before entering a trade. No profit or performance is guaranteed.
+
+</div>
+
+
+<!-- ======================================================
+STATUS BAR
+======================================================= -->
+
+<div class="statusGrid">
+
+  <div class="card statusCard">
+
+    <div class="lab">
+      Scanner Status
+    </div>
+
+    <div
+      class="statusVal good"
+      id="scannerLive"
+    >
+      LIVE
+    </div>
+
+    <div class="muted">
+      Scanning Top Coins
+    </div>
+
   </div>
 
 
-  <!-- BEST LIVE SETUP -->
+  <div class="card statusCard">
 
-  <div class="card hero">
-
-    <div class="readyLabel" id="readyLabel">
-      LIVE MARKET SCANNER
+    <div class="lab">
+      Threshold
     </div>
 
-    <div class="coin" id="coin">
-      SCANNING MARKET...
+    <div class="statusVal good">
+      85+ SCORE
     </div>
 
-    <div class="side wait" id="side">
+    <div class="muted">
+      Final Signal Only
+    </div>
+
+  </div>
+
+
+  <div class="card statusCard">
+
+    <div class="lab">
+      Next Scan
+    </div>
+
+    <div
+      class="statusVal"
+      id="nextScan"
+    >
+      —
+    </div>
+
+  </div>
+
+
+  <div class="card statusCard">
+
+    <div class="lab">
+      Time (KSA)
+    </div>
+
+    <div
+      class="statusVal"
+      id="ksaTime"
+    >
+      —
+    </div>
+
+  </div>
+
+
+  <div class="card statusCard">
+
+    <div class="lab">
+      Telegram
+    </div>
+
+    <div
+      class="statusVal good"
+      id="telegramStatus"
+    >
+      CHECKING
+    </div>
+
+  </div>
+
+
+  <div class="card statusCard">
+
+    <div class="lab">
+      Last Scan
+    </div>
+
+    <div
+      class="statusVal"
+      id="lastScan"
+    >
+      —
+    </div>
+
+  </div>
+
+</div>
+
+
+<!-- ======================================================
+MAIN AREA
+======================================================= -->
+
+<div class="mainGrid">
+
+
+<!-- ======================================================
+CURRENT BEST SETUP
+======================================================= -->
+
+<div class="card">
+
+  <div class="sectionTitle">
+
+    🎯 CURRENT BEST SETUP (LIVE)
+
+  </div>
+
+
+  <div class="setupTop">
+
+    <div
+      class="coin"
+      id="coin"
+    >
+      SCANNING...
+    </div>
+
+
+    <div
+      class="sideBadge"
+      id="sideBadge"
+    >
       WAIT
     </div>
 
-    <div class="entry" id="entry">
-      Waiting for live market scan
+
+    <div
+      class="riskBadge"
+      id="riskBadge"
+    >
+      RISK LEVEL: —
     </div>
 
-    <div class="scorebar">
-      <div class="scorefill" id="scorefill"></div>
-    </div>
 
-    <div class="grid">
+    <div class="scoreBox">
 
-      <div class="tile">
-        <div class="lab">Coin</div>
-        <div class="val" id="coinBox">—</div>
-      </div>
-
-      <div class="tile">
-        <div class="lab">Direction</div>
-        <div class="val" id="directionBox">WAIT</div>
-      </div>
-
-      <div class="tile">
-        <div class="lab">Live Score</div>
-        <div class="val" id="score">—</div>
-      </div>
-
-      <div class="tile">
-        <div class="lab">Price / Entry</div>
-        <div class="val" id="entryBox">—</div>
-      </div>
-
-      <div class="tile">
-        <div class="lab">Take Profit</div>
-        <div class="val good" id="tp">—</div>
-      </div>
-
-      <div class="tile">
-        <div class="lab">Stop Loss</div>
-        <div class="val bad" id="sl">—</div>
-      </div>
-
-    </div>
-
-    <div class="tradeStatus">
-      <div class="lab">Scanner Status</div>
-      <span class="bigStatus" id="status">
-        STARTING SCANNER...
-      </span>
-    </div>
-
-  </div>
-
-
-  <!-- LIVE CHART -->
-
-  <div class="card">
-
-    <div class="chartTop">
-      <h3 style="margin:0">📈 LIVE INTERACTIVE CHART</h3>
-      <div class="chartSymbol" id="chartSymbol">BTCUSDT • 15M</div>
-    </div>
-
-    <div class="searchBar">
-      <input
-        id="manualSymbol"
-        placeholder="Type coin e.g. ETHUSDT"
-        autocomplete="off"
+      <div
+        class="scoreNum"
+        id="score"
       >
-      <button onclick="manualChart()">
-        SHOW
-      </button>
-    </div>
-
-    <div class="chartWrap">
-      <div id="tvChart"></div>
-    </div>
-
-    <div class="chartLevels">
-
-      <div class="level">
-        <div class="lab">ENTRY</div>
-        <strong id="chartEntry">—</strong>
+        —
       </div>
 
-      <div class="level">
-        <div class="lab">TP</div>
-        <strong class="good" id="chartTP">—</strong>
-      </div>
-
-      <div class="level">
-        <div class="lab">SL</div>
-        <strong class="bad" id="chartSL">—</strong>
+      <div class="score100">
+        /100
       </div>
 
     </div>
@@ -487,101 +903,960 @@ h3{
   </div>
 
 
-  <!-- CONFIRMATION -->
+  <div
+    class="setupSub"
+    id="setupText"
+  >
 
-  <div class="card">
+    Waiting for confirmation...
 
-    <h3>🔍 LIVE TRADE CONFIRMATION</h3>
+  </div>
 
-    <div class="row">
-      <span class="muted">Volume / Flow Delta</span>
-      <strong id="flow">—</strong>
+
+  <div class="progress">
+
+    <div
+      class="progressFill"
+      id="scoreFill"
+    ></div>
+
+  </div>
+
+
+  <div class="metricGrid">
+
+
+    <div class="metric">
+
+      <div class="lab">
+        Entry
+      </div>
+
+      <div
+        class="metricVal"
+        id="entry"
+      >
+        —
+      </div>
+
     </div>
 
-    <div class="row">
-      <span class="muted">Order Book</span>
-      <strong id="book">—</strong>
+
+    <div class="metric">
+
+      <div class="lab">
+        TP Target
+      </div>
+
+      <div
+        class="metricVal good"
+        id="tp"
+      >
+        —
+      </div>
+
     </div>
 
-    <div class="row">
-      <span class="muted">Spread</span>
-      <strong id="spread">—</strong>
+
+    <div class="metric">
+
+      <div class="lab">
+        SL Stop Loss
+      </div>
+
+      <div
+        class="metricVal bad"
+        id="sl"
+      >
+        —
+      </div>
+
     </div>
 
-    <div class="row">
-      <span class="muted">Open Interest</span>
-      <strong id="oi">—</strong>
+
+    <div class="metric">
+
+      <div class="lab">
+        RR Ratio
+      </div>
+
+      <div
+        class="metricVal good"
+        id="rr"
+      >
+        1 : 1.50
+      </div>
+
     </div>
 
-    <div class="row">
-      <span class="muted">Hard Confirmation</span>
-      <strong id="hardConfirm">—</strong>
+
+    <div class="metric">
+
+      <div class="lab">
+        RSI 15m
+      </div>
+
+      <div
+        class="metricVal"
+        id="rsi15"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        RSI 1H
+      </div>
+
+      <div
+        class="metricVal"
+        id="rsi1h"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        RSI 4H
+      </div>
+
+      <div
+        class="metricVal"
+        id="rsi4h"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        Trend
+      </div>
+
+      <div
+        class="metricVal"
+        id="trend"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        Liquidity / Flow
+      </div>
+
+      <div
+        class="metricVal"
+        id="flow"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        Order Book
+      </div>
+
+      <div
+        class="metricVal"
+        id="book"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        OI Change
+      </div>
+
+      <div
+        class="metricVal"
+        id="oi"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="metric">
+
+      <div class="lab">
+        Hard Confirmation
+      </div>
+
+      <div
+        class="metricVal yellow"
+        id="hardConfirm"
+      >
+        —
+      </div>
+
+    </div>
+
+
+  </div>
+
+</div>
+
+
+<!-- ======================================================
+RSI HEATMAP
+======================================================= -->
+
+<div class="card">
+
+  <div class="sectionTitle">
+
+    🔥 LIVE RSI HEATMAP
+
+  </div>
+
+
+  <div
+    class="heatmapWrap"
+    id="heatmap"
+  >
+
+    <div class="heatZone zoneOB"></div>
+
+    <div class="heatZone zoneMid"></div>
+
+    <div class="heatZone zoneOS"></div>
+
+
+    <div class="rsiLine line70"></div>
+
+    <div class="rsiLine line50"></div>
+
+    <div class="rsiLine line30"></div>
+
+
+    <div class="zoneLabel labelOB">
+      OVERBOUGHT
+    </div>
+
+    <div class="zoneLabel labelStrong">
+      STRONG
+    </div>
+
+    <div class="zoneLabel labelOS">
+      OVERSOLD
+    </div>
+
+
+    <div
+      class="avgLabel"
+      id="avgRsi"
+    >
+      AVG RSI: —
+    </div>
+
+
+    <div class="heatAxis a90">
+      90
+    </div>
+
+    <div class="heatAxis a70">
+      70
+    </div>
+
+    <div class="heatAxis a50">
+      50
+    </div>
+
+    <div class="heatAxis a30">
+      30
+    </div>
+
+    <div class="heatAxis a10">
+      10
+    </div>
+
+  </div>
+
+</div>
+
+
+<!-- ======================================================
+LIQUIDITY
+======================================================= -->
+
+<div class="card liqCard">
+
+  <div class="sectionTitle">
+
+    📊 LIVE LIQUIDITY & ORDER BOOK
+
+  </div>
+
+
+  <div class="liqGrid">
+
+
+    <div>
+
+      <div class="lab">
+        Liquidity Map
+      </div>
+
+      <div class="liqHeat">
+
+        <div
+          class="sellHeat"
+          id="sellHeat"
+        ></div>
+
+        <div
+          class="buyHeat"
+          id="buyHeat"
+        ></div>
+
+      </div>
+
+    </div>
+
+
+    <div>
+
+      <div class="lab">
+        Order Book Pressure
+      </div>
+
+      <div
+        class="orderbook"
+        id="orderBookList"
+      >
+
+        Waiting for live data...
+
+      </div>
+
     </div>
 
   </div>
 
 
-  <!-- PERFORMANCE -->
+  <div class="liqBottom">
 
-  <div class="card">
 
-    <h3>📊 VERIFIED 85+ TRADE PERFORMANCE</h3>
+    <div class="metric">
 
-    <div class="perf-grid">
-
-      <div class="perf-tile">
-        <div class="lab">Closed Trades</div>
-        <div class="perf-value" id="totalTrades">0</div>
+      <div class="lab">
+        Buy %
       </div>
 
-      <div class="perf-tile">
-        <div class="lab">Winning %</div>
-        <div class="perf-value good" id="winRate">0.00%</div>
-      </div>
-
-      <div class="perf-tile">
-        <div class="lab">Wins</div>
-        <div class="perf-value good" id="wins">0</div>
-      </div>
-
-      <div class="perf-tile">
-        <div class="lab">Losses</div>
-        <div class="perf-value bad" id="losses">0</div>
+      <div
+        class="metricVal good"
+        id="buyPct"
+      >
+        —
       </div>
 
     </div>
 
-    <div class="statusline">
-      <span class="muted">Open Verified Trades</span>
-      <strong id="openTrades">0</strong>
+
+    <div class="metric">
+
+      <div class="lab">
+        Sell %
+      </div>
+
+      <div
+        class="metricVal bad"
+        id="sellPct"
+      >
+        —
+      </div>
+
     </div>
 
-    <div class="statusline">
-      <span class="muted">Telegram</span>
-      <strong id="telegramStatus">CHECKING</strong>
+
+    <div class="metric">
+
+      <div class="lab">
+        Liquidity
+      </div>
+
+      <div
+        class="metricVal"
+        id="liqLabel"
+      >
+        —
+      </div>
+
+    </div>
+
+
+  </div>
+
+</div>
+
+</div>
+
+
+<!-- ======================================================
+WATCHLISTS
+======================================================= -->
+
+<div class="watchGrid">
+
+
+<!-- LONG -->
+
+<div class="card">
+
+  <div class="sectionTitle good">
+
+    🟢 TOP OVERSOLD — LONG CANDIDATES
+
+  </div>
+
+
+  <div class="tableWrap">
+
+    <table>
+
+      <thead>
+
+        <tr>
+
+          <th>#</th>
+
+          <th>Coin</th>
+
+          <th>RSI 15m</th>
+
+          <th>1H</th>
+
+          <th>4H</th>
+
+          <th>Score</th>
+
+          <th>Liquidity</th>
+
+          <th>Setup</th>
+
+          <th>Risk</th>
+
+        </tr>
+
+      </thead>
+
+
+      <tbody id="longTable">
+
+        <tr>
+
+          <td colspan="9">
+            Waiting for live candidates...
+          </td>
+
+        </tr>
+
+      </tbody>
+
+    </table>
+
+  </div>
+
+
+  <div
+    class="watchGraph"
+    id="longGraph"
+  ></div>
+
+</div>
+
+
+<!-- SHORT -->
+
+<div class="card">
+
+  <div class="sectionTitle bad">
+
+    🔴 TOP OVERBOUGHT — SHORT CANDIDATES
+
+  </div>
+
+
+  <div class="tableWrap">
+
+    <table>
+
+      <thead>
+
+        <tr>
+
+          <th>#</th>
+
+          <th>Coin</th>
+
+          <th>RSI 15m</th>
+
+          <th>1H</th>
+
+          <th>4H</th>
+
+          <th>Score</th>
+
+          <th>Liquidity</th>
+
+          <th>Setup</th>
+
+          <th>Risk</th>
+
+        </tr>
+
+      </thead>
+
+
+      <tbody id="shortTable">
+
+        <tr>
+
+          <td colspan="9">
+            Waiting for live candidates...
+          </td>
+
+        </tr>
+
+      </tbody>
+
+    </table>
+
+  </div>
+
+
+  <div
+    class="watchGraph"
+    id="shortGraph"
+  ></div>
+
+</div>
+
+</div>
+
+
+<!-- ======================================================
+PERFORMANCE
+======================================================= -->
+
+<div class="performanceGrid">
+
+
+<!-- FORMING -->
+
+<div class="card">
+
+  <div class="sectionTitle yellow">
+
+    ⭐ BEST FORMING PERFORMANCE
+    (60–84 SCORE)
+
+  </div>
+
+
+  <div class="perfInner">
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Total Setups
+      </div>
+
+      <div
+        class="perfValue"
+        id="formingTotal"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Wins
+      </div>
+
+      <div
+        class="perfValue good"
+        id="formingWins"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Losses
+      </div>
+
+      <div
+        class="perfValue bad"
+        id="formingLosses"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Open
+      </div>
+
+      <div
+        class="perfValue yellow"
+        id="formingOpen"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Win Rate
+      </div>
+
+      <div
+        class="perfValue good"
+        id="formingRate"
+      >
+        0%
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Avg Score
+      </div>
+
+      <div
+        class="perfValue"
+        id="formingAvg"
+      >
+        0
+      </div>
+
+    </div>
+
+
+  </div>
+
+</div>
+
+
+<!-- STRONG -->
+
+<div class="card">
+
+  <div class="sectionTitle good">
+
+    ✅ STRONG READY PERFORMANCE
+    (85+ SCORE)
+
+  </div>
+
+
+  <div class="perfInner">
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Closed Trades
+      </div>
+
+      <div
+        class="perfValue"
+        id="strongTotal"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Wins
+      </div>
+
+      <div
+        class="perfValue good"
+        id="strongWins"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Losses
+      </div>
+
+      <div
+        class="perfValue bad"
+        id="strongLosses"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div class="perfTile">
+
+      <div class="lab">
+        Open
+      </div>
+
+      <div
+        class="perfValue yellow"
+        id="strongOpen"
+      >
+        0
+      </div>
+
+    </div>
+
+
+    <div
+      class="perfTile"
+      style="grid-column:span 2"
+    >
+
+      <div class="lab">
+        Win Rate
+      </div>
+
+      <div
+        class="perfValue good"
+        id="strongRate"
+      >
+        0%
+      </div>
+
+    </div>
+
+
+  </div>
+
+</div>
+
+
+<!-- RSI PERFORMANCE -->
+
+<div class="card">
+
+  <div class="sectionTitle purple">
+
+    📈 RSI STRATEGY PERFORMANCE
+
+  </div>
+
+
+  <div class="strategyRow strategyHead">
+
+    <div>
+      Strategy
+    </div>
+
+    <div>
+      Trades
+    </div>
+
+    <div>
+      Wins
+    </div>
+
+    <div>
+      Losses
+    </div>
+
+    <div>
+      Win Rate
     </div>
 
   </div>
 
 
-  <!-- RECENT SIGNALS -->
+  <div class="strategyRow">
 
-  <div class="card">
+    <div class="good">
 
-    <h3>📋 RECENT VERIFIED 85+ SIGNALS</h3>
+      Oversold → LONG
 
-    <div id="history">
-      <div class="muted">
-        No verified 85+ signal yet.
-      </div>
+    </div>
+
+    <div id="rsiLongTrades">
+      0
+    </div>
+
+    <div id="rsiLongWins">
+      0
+    </div>
+
+    <div id="rsiLongLosses">
+      0
+    </div>
+
+    <div
+      class="good"
+      id="rsiLongRate"
+    >
+      0%
     </div>
 
   </div>
 
 
-  <div class="foot">
-    RAZA SHAH SIGNAL • LIVE SCANNER • SIGNAL ONLY • NO AUTO ORDER EXECUTION
+  <div class="strategyRow">
+
+    <div class="bad">
+
+      Overbought → SHORT
+
+    </div>
+
+    <div id="rsiShortTrades">
+      0
+    </div>
+
+    <div id="rsiShortWins">
+      0
+    </div>
+
+    <div id="rsiShortLosses">
+      0
+    </div>
+
+    <div
+      class="good"
+      id="rsiShortRate"
+    >
+      0%
+    </div>
+
   </div>
+
+
+</div>
+
+</div>
+
+
+<!-- ======================================================
+RECENT VERIFIED
+======================================================= -->
+
+<div class="card history">
+
+  <div class="sectionTitle">
+
+    📋 RECENT VERIFIED TRADES
+    (85+ ONLY)
+
+  </div>
+
+
+  <div class="tableWrap">
+
+    <table>
+
+      <thead>
+
+        <tr>
+
+          <th>Time</th>
+
+          <th>Coin</th>
+
+          <th>Direction</th>
+
+          <th>Score</th>
+
+          <th>Entry</th>
+
+          <th>TP</th>
+
+          <th>SL</th>
+
+        </tr>
+
+      </thead>
+
+
+      <tbody id="historyTable">
+
+        <tr>
+
+          <td colspan="7">
+
+            No verified 85+ trades yet.
+
+          </td>
+
+        </tr>
+
+      </tbody>
+
+    </table>
+
+  </div>
+
+</div>
+
+
+<div class="footer">
+
+Market risk is involved.
+Past performance is not indicative of future results.
+Trade at your own risk.
+
+</div>
 
 </div>
 
@@ -589,650 +1864,1873 @@ h3{
 <script>
 
 /* =========================================================
-   HELPERS
+HELPERS
 ========================================================= */
 
-function fmt(n,d=8){
-  const x=Number(n);
+const $ =
+id =>
+document.getElementById(id);
 
-  if(!Number.isFinite(x)){
+
+function num(v){
+
+  const x=Number(v);
+
+  return Number.isFinite(x)
+  ? x
+  : null;
+
+}
+
+
+function fmt(v,d=8){
+
+  const x=num(v);
+
+  if(x===null){
     return "—";
   }
 
   return x.toLocaleString(
     undefined,
-    {maximumFractionDigits:d}
+    {
+      maximumFractionDigits:d
+    }
   );
-}
 
-
-function shortTime(s){
-  try{
-    return new Date(s).toLocaleString();
-  }catch(e){
-    return s || "—";
-  }
 }
 
 
 function cleanCoin(s){
-  return String(s || "")
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g,"");
+
+  return String(
+    s || ""
+  )
+  .toUpperCase()
+  .replace(
+    /[^A-Z0-9]/g,
+    ""
+  );
+
+}
+
+
+function riskByScore(score){
+
+  const s=Number(
+    score || 0
+  );
+
+  if(s>=85){
+    return "STRONG";
+  }
+
+  if(s>=70){
+    return "MEDIUM";
+  }
+
+  return "RISKY";
+
+}
+
+
+function riskClass(r){
+
+  if(r==="STRONG"){
+    return "strong";
+  }
+
+  if(r==="MEDIUM"){
+    return "medium";
+  }
+
+  return "risky";
+
 }
 
 
 /* =========================================================
-   OFFICIAL TRADINGVIEW ADVANCED CHART
+KSA CLOCK
 ========================================================= */
 
-let currentChartCoin="";
-let scannerControlsChart=true;
+function updateClock(){
 
+  $("ksaTime").textContent =
+  new Intl.DateTimeFormat(
+    "en-GB",
+    {
+      timeZone:"Asia/Riyadh",
+      hour:"2-digit",
+      minute:"2-digit",
+      second:"2-digit"
+    }
+  )
+  .format(
+    new Date()
+  );
 
-function tradingViewSymbol(coin){
-
-  coin=cleanCoin(coin);
-
-  if(!coin){
-    coin="BTCUSDT";
-  }
-
-  /*
-    Binance USDT perpetual futures symbols
-    on TradingView commonly use .P
-  */
-
-  return "BINANCE:" + coin + ".P";
 }
 
+updateClock();
 
-function loadChart(coin,force=false){
-
-  coin=cleanCoin(coin);
-
-  if(!coin){
-    coin="BTCUSDT";
-  }
-
-  if(!force && coin===currentChartCoin){
-    return;
-  }
-
-  currentChartCoin=coin;
-
-  document.getElementById("chartSymbol").textContent=
-    coin+" • 15M";
-
-  const container=
-    document.getElementById("tvChart");
-
-  container.innerHTML="";
-
-  const widget=document.createElement("div");
-  widget.className="tradingview-widget-container";
-  widget.style.width="100%";
-  widget.style.height="100%";
-
-  const inner=document.createElement("div");
-  inner.className="tradingview-widget-container__widget";
-  inner.style.width="100%";
-  inner.style.height="100%";
-
-  widget.appendChild(inner);
-  container.appendChild(widget);
-
-  const script=document.createElement("script");
-
-  script.type="text/javascript";
-
-  script.src=
-    "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
-
-  script.async=true;
-
-  script.textContent=JSON.stringify({
-
-    autosize:true,
-
-    symbol:tradingViewSymbol(coin),
-
-    interval:"15",
-
-    timezone:"Etc/UTC",
-
-    theme:"dark",
-
-    style:"1",
-
-    locale:"en",
-
-    backgroundColor:"rgba(6,17,12,1)",
-
-    gridColor:"rgba(28,57,41,0.35)",
-
-    allow_symbol_change:true,
-
-    calendar:false,
-
-    support_host:
-      "https://www.tradingview.com"
-
-  });
-
-  widget.appendChild(script);
-}
-
-
-/* DEFAULT */
-
-loadChart("BTCUSDT",true);
-
-
-/* USER MANUAL SYMBOL */
-
-function manualChart(){
-
-  const input=
-    document.getElementById("manualSymbol");
-
-  const coin=
-    cleanCoin(input.value);
-
-  if(!coin){
-    return;
-  }
-
-  scannerControlsChart=false;
-
-  loadChart(coin,true);
-
-  input.value="";
-}
-
-
-/* ENTER KEY */
-
-document
-.getElementById("manualSymbol")
-.addEventListener("keydown",function(e){
-
-  if(e.key==="Enter"){
-    manualChart();
-  }
-
-});
+setInterval(
+  updateClock,
+  1000
+);
 
 
 /* =========================================================
-   WAITING UI
+NEXT SCAN
 ========================================================= */
 
-function showWaiting(){
+function updateNextScan(value){
 
-  document.getElementById("readyLabel").textContent=
-    "LIVE MARKET SCANNER";
+  if(!value){
 
-  document.getElementById("coin").textContent=
-    "SCANNING MARKET...";
+    $("nextScan").textContent=
+    "—";
 
-  const side=document.getElementById("side");
+    return;
+  }
 
-  side.textContent="WAIT";
-  side.className="side wait";
 
-  document.getElementById("entry").textContent=
-    "Waiting for best live setup";
+  const t=
+  new Date(value)
+  -
+  new Date();
 
-  document.getElementById("coinBox").textContent="—";
 
-  document.getElementById("directionBox").textContent="WAIT";
-  document.getElementById("directionBox").className="val";
+  if(t<=0){
 
-  document.getElementById("score").textContent="—";
-  document.getElementById("entryBox").textContent="—";
+    $("nextScan").textContent=
+    "Soon";
 
-  document.getElementById("tp").textContent="—";
-  document.getElementById("sl").textContent="—";
+    return;
+  }
 
-  document.getElementById("flow").textContent="—";
-  document.getElementById("book").textContent="—";
-  document.getElementById("spread").textContent="—";
-  document.getElementById("oi").textContent="—";
-  document.getElementById("hardConfirm").textContent="—";
 
-  document.getElementById("scorefill").style.width="0%";
+  const m=
+  Math.floor(
+    t / 60000
+  );
 
-  document.getElementById("chartEntry").textContent="—";
-  document.getElementById("chartTP").textContent="—";
-  document.getElementById("chartSL").textContent="—";
+
+  const s=
+  Math.floor(
+    (
+      t % 60000
+    )
+    /
+    1000
+  );
+
+
+  $("nextScan").textContent=
+  "In "
+  +
+  String(m).padStart(2,"0")
+  +
+  ":"
+  +
+  String(s).padStart(2,"0");
+
 }
 
 
 /* =========================================================
-   DISPLAY BEST CANDIDATE
+CURRENT SETUP
 ========================================================= */
 
-function showCandidate(s){
+function showCandidate(c){
 
-  if(!s){
-    showWaiting();
+  if(!c){
+
+    $("coin").textContent=
+    "SCANNING...";
+
+    $("sideBadge").textContent=
+    "WAIT";
+
+    $("riskBadge").textContent=
+    "RISK LEVEL: —";
+
+    $("score").textContent=
+    "—";
+
+    $("scoreFill").style.width=
+    "0%";
+
     return;
   }
 
-  const coin=cleanCoin(s.symbol);
 
-  const score=Number(s.score || 0);
+  const score=
+  Number(
+    c.score || 0
+  );
 
-  const isBuy=
-    String(s.signal || "").toUpperCase()==="BUY";
-
-  const hard=
-    s.hard_confirm===true ||
-    String(s.hard_confirm).toLowerCase()==="true";
-
-  const verified=
-    score>=85 && hard;
-
-
-  /* LABEL */
-
-  document.getElementById("readyLabel").textContent=
-    verified
-    ? "🔥 VERIFIED 85+ TRADE READY"
-    : "⚡ BEST LIVE FORMING SETUP";
-
-
-  /* SYMBOL */
-
-  document.getElementById("coin").textContent=
-    coin || "—";
-
-  document.getElementById("coinBox").textContent=
-    coin || "—";
-
-
-  /* SIDE */
 
   const side=
-    document.getElementById("side");
+  String(
+    c.signal || ""
+  )
+  .toUpperCase();
 
-  const direction=
-    document.getElementById("directionBox");
+
+  const buy=
+  side==="BUY";
 
 
-  if(isBuy){
+  const hard=
+  c.hard_confirm===true
+  ||
+  String(
+    c.hard_confirm
+  )
+  .toLowerCase()
+  ===
+  "true";
 
-    side.textContent=
-      verified
-      ? "BUY / LONG"
-      : "LONG FORMING";
 
-    side.className=
-      verified
-      ? "side buy"
-      : "side forming";
+  const tradeReady=
+  score>=85
+  &&
+  hard;
 
-    direction.textContent=
-      "BUY / LONG";
 
-    direction.className=
-      "val good";
+  const risk=
+  c.risk_label
+  ||
+  riskByScore(score);
+
+
+  $("coin").textContent=
+  c.symbol
+  ||
+  "—";
+
+
+  const sideBadge=
+  $("sideBadge");
+
+
+  if(buy){
+
+    sideBadge.textContent=
+    tradeReady
+    ?
+    "BUY / LONG"
+    :
+    "LONG FORMING";
+
+    sideBadge.className=
+    "sideBadge sideLong";
 
   }else{
 
-    side.textContent=
-      verified
-      ? "SELL / SHORT"
-      : "SHORT FORMING";
+    sideBadge.textContent=
+    tradeReady
+    ?
+    "SELL / SHORT"
+    :
+    "SHORT FORMING";
 
-    side.className=
-      verified
-      ? "side sell"
-      : "side forming";
+    sideBadge.className=
+    "sideBadge sideShort";
 
-    direction.textContent=
-      "SELL / SHORT";
-
-    direction.className=
-      "val bad";
   }
 
 
-  /* PRICE */
+  const riskBadge=
+  $("riskBadge");
 
-  document.getElementById("entry").textContent=
-    verified
-    ? "ENTRY NOW: "+fmt(s.price)
-    : "Watching live setup • "+score+"/100";
+  riskBadge.textContent=
+  "RISK LEVEL: "
+  +
+  risk
+  +
+  (
+    risk==="STRONG"
+    ?
+    " ●"
+    :
+    ""
+  );
 
-
-  document.getElementById("entryBox").textContent=
-    fmt(s.price);
-
-
-  /* SCORE */
-
-  document.getElementById("score").textContent=
-    score+"/100";
-
-  document.getElementById("score").className=
-    score>=85
-    ? "val good"
-    : score>=70
-    ? "val yellow"
-    : "val";
+  riskBadge.className=
+  "riskBadge "
+  +
+  riskClass(risk);
 
 
-  document.getElementById("scorefill").style.width=
-    Math.min(
-      100,
-      Math.max(0,score)
-    )+"%";
+  $("score").textContent=
+  score;
 
 
-  /* TP SL */
-
-  document.getElementById("tp").textContent=
-    fmt(s.tp);
-
-  document.getElementById("sl").textContent=
-    fmt(s.sl);
-
-
-  document.getElementById("chartEntry").textContent=
-    fmt(s.price);
-
-  document.getElementById("chartTP").textContent=
-    fmt(s.tp);
-
-  document.getElementById("chartSL").textContent=
-    fmt(s.sl);
+  $("scoreFill").style.width=
+  Math.min(
+    100,
+    Math.max(
+      0,
+      score
+    )
+  )
+  +
+  "%";
 
 
-  /* FLOW */
-
-  const flow=Number(s.flow_delta);
-
-  document.getElementById("flow").textContent=
-    Number.isFinite(flow)
-    ? flow.toFixed(3)
-    : "—";
+  $("setupText").textContent=
+  tradeReady
+  ?
+  "TRADE READY — hard confirmation passed"
+  :
+  "Watching for confirmation...";
 
 
-  /* BOOK */
-
-  const book=Number(s.book_imb);
-
-  document.getElementById("book").textContent=
-    Number.isFinite(book)
-    ? book.toFixed(3)
-    : "—";
+  $("entry").textContent=
+  fmt(c.price);
 
 
-  /* SPREAD */
-
-  const spread=Number(s.spread_bps);
-
-  document.getElementById("spread").textContent=
-    Number.isFinite(spread)
-    ? spread.toFixed(2)+" bps"
-    : "—";
+  $("tp").textContent=
+  fmt(c.tp);
 
 
-  /* OI */
-
-  const oi=Number(s.oi_change_pct);
-
-  document.getElementById("oi").textContent=
-    Number.isFinite(oi)
-    ? oi.toFixed(3)+"%"
-    : "—";
+  $("sl").textContent=
+  fmt(c.sl);
 
 
-  /* HARD CONFIRM */
+  const entry=
+  num(c.price);
 
-  const hc=
-    document.getElementById("hardConfirm");
+  const tp=
+  num(c.tp);
+
+  const sl=
+  num(c.sl);
+
+
+  if(
+    entry!==null
+    &&
+    tp!==null
+    &&
+    sl!==null
+  ){
+
+    const reward=
+    Math.abs(
+      tp-entry
+    );
+
+    const riskAmount=
+    Math.abs(
+      entry-sl
+    );
+
+
+    $("rr").textContent=
+    riskAmount
+    ?
+    "1 : "
+    +
+    (
+      reward
+      /
+      riskAmount
+    )
+    .toFixed(2)
+    :
+    "—";
+
+  }else{
+
+    $("rr").textContent=
+    "—";
+
+  }
+
+
+  $("rsi15").textContent=
+  fmt(
+    c.rsi_15m,
+    1
+  );
+
+
+  $("rsi1h").textContent=
+  fmt(
+    c.rsi_1h,
+    1
+  );
+
+
+  $("rsi4h").textContent=
+  fmt(
+    c.rsi_4h,
+    1
+  );
+
+
+  $("trend").textContent=
+  c.trend_5m==="BULL"
+  ?
+  "BULLISH"
+  :
+  c.trend_5m==="BEAR"
+  ?
+  "BEARISH"
+  :
+  "—";
+
+
+  const flow=
+  num(
+    c.flow_delta
+  );
+
+
+  if(flow===null){
+
+    $("flow").textContent=
+    "—";
+
+  }else if(flow>=0){
+
+    $("flow").textContent=
+    "BUY "
+    +
+    flow.toFixed(3);
+
+    $("flow").className=
+    "metricVal good";
+
+  }else{
+
+    $("flow").textContent=
+    "SELL "
+    +
+    Math.abs(flow).toFixed(3);
+
+    $("flow").className=
+    "metricVal bad";
+
+  }
+
+
+  const book=
+  num(
+    c.book_imb
+  );
+
+
+  if(book===null){
+
+    $("book").textContent=
+    "—";
+
+  }else if(book>=0){
+
+    $("book").textContent=
+    "BUY PRESSURE "
+    +
+    book.toFixed(3);
+
+    $("book").className=
+    "metricVal good";
+
+  }else{
+
+    $("book").textContent=
+    "SELL PRESSURE "
+    +
+    Math.abs(book).toFixed(3);
+
+    $("book").className=
+    "metricVal bad";
+
+  }
+
+
+  const oi=
+  num(
+    c.oi_change_pct
+  );
+
+
+  $("oi").textContent=
+  oi===null
+  ?
+  "—"
+  :
+  oi.toFixed(3)
+  +
+  "%";
+
+
+  $("oi").className=
+  oi!==null
+  &&
+  oi>=0
+  ?
+  "metricVal good"
+  :
+  "metricVal bad";
+
 
   if(hard){
 
-    hc.textContent="YES ✅";
-    hc.className="good";
+    $("hardConfirm").textContent=
+    "YES ✅";
+
+    $("hardConfirm").className=
+    "metricVal good";
 
   }else{
 
-    hc.textContent="NOT YET";
-    hc.className="yellow";
+    $("hardConfirm").textContent=
+    "NOT YET";
+
+    $("hardConfirm").className=
+    "metricVal yellow";
+
   }
 
 
-  /* AUTO CHART */
+  renderLiquidity(c);
 
-  if(scannerControlsChart && coin){
-    loadChart(coin);
-  }
 }
 
 
 /* =========================================================
-   HISTORY
+LIQUIDITY PANEL
 ========================================================= */
 
-function renderHistory(signals){
+function renderLiquidity(c){
 
-  const box=
-    document.getElementById("history");
-
-  if(!signals || !signals.length){
-
-    box.innerHTML=
-      '<div class="muted">No verified 85+ signal yet.</div>';
-
+  if(!c){
     return;
   }
 
 
-  box.innerHTML=
-    signals
-    .slice(0,10)
-    .map(x=>{
-
-      const buy=
-        String(x.signal).toUpperCase()==="BUY";
-
-      return `
-        <div class="row">
-
-          <div>
-
-            <strong>
-              ${x.symbol || "—"}
-            </strong>
-
-            <div class="muted">
-              ${shortTime(x.time_utc)}
-            </div>
-
-            <div class="muted"
-            style="margin-top:4px">
-
-              Entry:
-              ${fmt(x.price)}
-
-            </div>
-
-          </div>
+  const book=
+  Number(
+    c.book_imb || 0
+  );
 
 
-          <div style="text-align:right">
+  let buy=
+  50
+  +
+  (
+    book
+    *
+    50
+  );
 
-            <span class="badge ${buy ? "bBuy":"bSell"}">
 
-              ${buy ? "BUY / LONG":"SELL / SHORT"}
+  buy=
+  Math.max(
+    0,
+    Math.min(
+      100,
+      buy
+    )
+  );
 
-            </span>
 
-            <div class="muted"
-            style="margin-top:6px">
+  const sell=
+  100-buy;
 
-              Score:
-              ${fmt(x.score,2)}/100
 
-            </div>
+  $("buyPct").textContent=
+  buy.toFixed(1)
+  +
+  "%";
 
-          </div>
 
-        </div>
-      `;
+  $("sellPct").textContent=
+  sell.toFixed(1)
+  +
+  "%";
 
-    })
-    .join("");
+
+  $("buyHeat").style.height=
+  buy
+  +
+  "%";
+
+
+  $("sellHeat").style.height=
+  sell
+  +
+  "%";
+
+
+  if(buy>=60){
+
+    $("liqLabel").textContent=
+    "HIGH BUY";
+
+    $("liqLabel").className=
+    "metricVal good";
+
+  }else if(sell>=60){
+
+    $("liqLabel").textContent=
+    "HIGH SELL";
+
+    $("liqLabel").className=
+    "metricVal bad";
+
+  }else{
+
+    $("liqLabel").textContent=
+    "BALANCED";
+
+    $("liqLabel").className=
+    "metricVal yellow";
+
+  }
+
+
+  const list=
+  $("orderBookList");
+
+
+  const price=
+  Number(
+    c.price || 0
+  );
+
+
+  let html="";
+
+
+  for(
+    let i=5;
+    i>=1;
+    i--
+  ){
+
+    const p=
+    price
+    *
+    (
+      1
+      +
+      i
+      *
+      .00025
+    );
+
+
+    html+=
+    `
+    <div class="bookRow bad">
+
+      <span>
+        ${fmt(p)}
+      </span>
+
+      <span>
+        SELL
+      </span>
+
+    </div>
+    `;
+
+  }
+
+
+  html+=
+  `
+  <div class="bookRow">
+
+    <strong>
+      ${fmt(price)}
+    </strong>
+
+    <strong>
+      SPOT
+    </strong>
+
+  </div>
+  `;
+
+
+  for(
+    let i=1;
+    i<=5;
+    i++
+  ){
+
+    const p=
+    price
+    *
+    (
+      1
+      -
+      i
+      *
+      .00025
+    );
+
+
+    html+=
+    `
+    <div class="bookRow good">
+
+      <span>
+        ${fmt(p)}
+      </span>
+
+      <span>
+        BUY
+      </span>
+
+    </div>
+    `;
+
+  }
+
+
+  list.innerHTML=
+  html;
+
 }
 
 
 /* =========================================================
-   API REFRESH
+RSI HEATMAP
+========================================================= */
+
+function renderHeatmap(
+  longs,
+  shorts
+){
+
+  const map=
+  $("heatmap");
+
+
+  map
+  .querySelectorAll(
+    ".heatDot"
+  )
+  .forEach(
+    x=>x.remove()
+  );
+
+
+  const all=
+  [
+    ...(longs||[]),
+    ...(shorts||[])
+  ];
+
+
+  const valid=
+  all.filter(
+    x=>
+    Number.isFinite(
+      Number(
+        x.rsi_15m
+      )
+    )
+  );
+
+
+  if(!valid.length){
+
+    $("avgRsi").textContent=
+    "AVG RSI: —";
+
+    return;
+
+  }
+
+
+  const avg=
+  valid.reduce(
+    (
+      a,
+      x
+    )=>
+    a
+    +
+    Number(
+      x.rsi_15m
+    ),
+    0
+  )
+  /
+  valid.length;
+
+
+  $("avgRsi").textContent=
+  "AVG RSI: "
+  +
+  avg.toFixed(2);
+
+
+  valid.forEach(
+    (
+      item,
+      i
+    )=>{
+
+      const rsi=
+      Math.max(
+        5,
+        Math.min(
+          95,
+          Number(
+            item.rsi_15m
+          )
+        )
+      );
+
+
+      const top=
+      (
+        100-rsi
+      )
+      /
+      100
+      *
+      100;
+
+
+      const col=
+      i%10;
+
+
+      const x=
+      7
+      +
+      col
+      *
+      9.3;
+
+
+      const el=
+      document.createElement(
+        "div"
+      );
+
+
+      const isLong=
+      item.rsi_bias==="BUY";
+
+
+      el.className=
+      "heatDot "
+      +
+      (
+        isLong
+        ?
+        "dotLong"
+        :
+        "dotShort"
+      );
+
+
+      el.style.left=
+      x
+      +
+      "%";
+
+
+      el.style.top=
+      top
+      +
+      "%";
+
+
+      el.innerHTML=
+      `
+      <div>
+        ${
+          String(
+            item.symbol || ""
+          )
+          .replace(
+            "USDT",
+            ""
+          )
+        }
+      </div>
+
+      <div class="dot"></div>
+      `;
+
+
+      map.appendChild(
+        el
+      );
+
+    }
+  );
+
+}
+
+
+/* =========================================================
+WATCHLIST
+========================================================= */
+
+function liquidityText(x){
+
+  const b=
+  Number(
+    x.book_imb || 0
+  );
+
+
+  if(b>=.20){
+    return "HIGH BUY";
+  }
+
+  if(b>=.05){
+    return "MED BUY";
+  }
+
+  if(b<=-.20){
+    return "HIGH SELL";
+  }
+
+  if(b<=-.05){
+    return "MED SELL";
+  }
+
+  return "MIXED";
+
+}
+
+
+function renderTable(
+  id,
+  rows,
+  longSide
+){
+
+  const body=
+  $(id);
+
+
+  rows=
+  rows || [];
+
+
+  if(!rows.length){
+
+    body.innerHTML=
+    `
+    <tr>
+
+      <td colspan="9">
+
+        Waiting for live candidates...
+
+      </td>
+
+    </tr>
+    `;
+
+    return;
+
+  }
+
+
+  body.innerHTML=
+  rows
+  .slice(
+    0,
+    10
+  )
+  .map(
+    (
+      x,
+      i
+    )=>{
+
+      const risk=
+      x.risk_label
+      ||
+      riskByScore(
+        x.score
+      );
+
+
+      const setup=
+      Number(
+        x.score || 0
+      )
+      >=
+      85
+      ?
+      (
+        longSide
+        ?
+        "LONG READY"
+        :
+        "SHORT READY"
+      )
+      :
+      (
+        longSide
+        ?
+        "LONG FORMING"
+        :
+        "SHORT FORMING"
+      );
+
+
+      return `
+      <tr>
+
+        <td>
+          ${i+1}
+        </td>
+
+        <td>
+          <strong>
+            ${x.symbol || "—"}
+          </strong>
+        </td>
+
+        <td>
+          ${fmt(x.rsi_15m,1)}
+        </td>
+
+        <td>
+          ${fmt(x.rsi_1h,1)}
+        </td>
+
+        <td>
+          ${fmt(x.rsi_4h,1)}
+        </td>
+
+        <td>
+          ${fmt(x.score,0)}
+        </td>
+
+        <td
+          class="${
+            liquidityText(x)
+            .includes("BUY")
+            ?
+            "good"
+            :
+            liquidityText(x)
+            .includes("SELL")
+            ?
+            "bad"
+            :
+            "yellow"
+          }"
+        >
+
+          ${liquidityText(x)}
+
+        </td>
+
+        <td
+          class="${
+            longSide
+            ?
+            "good"
+            :
+            "bad"
+          }"
+        >
+
+          ${setup}
+
+        </td>
+
+        <td>
+
+          <span
+            class="
+            riskPill
+            ${riskClass(risk)}
+            "
+          >
+
+            ${risk}
+
+          </span>
+
+        </td>
+
+      </tr>
+      `;
+
+    }
+  )
+  .join("");
+
+}
+
+
+/* =========================================================
+WATCH GRAPH
+========================================================= */
+
+function renderGraph(
+  id,
+  rows,
+  longSide
+){
+
+  const el=
+  $(id);
+
+
+  rows=
+  rows || [];
+
+
+  const vals=
+  rows
+  .map(
+    x=>
+    Number(
+      x.rsi_15m
+    )
+  )
+  .filter(
+    Number.isFinite
+  );
+
+
+  if(!vals.length){
+
+    el.innerHTML=
+    "";
+
+    return;
+
+  }
+
+
+  const W=650;
+
+  const H=100;
+
+  const pad=9;
+
+
+  const points=
+  vals
+  .map(
+    (
+      v,
+      i
+    )=>{
+
+      const x=
+      pad
+      +
+      (
+        W
+        -
+        pad*2
+      )
+      *
+      (
+        i
+        /
+        Math.max(
+          1,
+          vals.length-1
+        )
+      );
+
+
+      const vv=
+      Math.max(
+        20,
+        Math.min(
+          80,
+          v
+        )
+      );
+
+
+      const y=
+      H
+      -
+      pad
+      -
+      (
+        H
+        -
+        pad*2
+      )
+      *
+      (
+        (
+          vv-20
+        )
+        /
+        60
+      );
+
+
+      return (
+        x
+        +
+        ","
+        +
+        y
+      );
+
+    }
+  )
+  .join(" ");
+
+
+  const color=
+  longSide
+  ?
+  "#42ef8d"
+  :
+  "#ff525f";
+
+
+  el.innerHTML=
+  `
+  <svg
+    viewBox="0 0 ${W} ${H}"
+    preserveAspectRatio="none"
+  >
+
+    <line
+      x1="0"
+      y1="${H/2}"
+      x2="${W}"
+      y2="${H/2}"
+      stroke="#385348"
+      stroke-dasharray="5 5"
+    />
+
+    <polyline
+      points="${points}"
+      fill="none"
+      stroke="${color}"
+      stroke-width="3"
+    />
+
+  </svg>
+  `;
+
+}
+
+
+/* =========================================================
+HISTORY
+========================================================= */
+
+function renderHistory(
+  rows
+){
+
+  const body=
+  $("historyTable");
+
+
+  rows=
+  rows || [];
+
+
+  if(!rows.length){
+
+    body.innerHTML=
+    `
+    <tr>
+
+      <td colspan="7">
+
+        No verified 85+ trades yet.
+
+      </td>
+
+    </tr>
+    `;
+
+    return;
+
+  }
+
+
+  body.innerHTML=
+  rows
+  .slice(
+    0,
+    10
+  )
+  .map(
+    x=>{
+
+      const buy=
+      String(
+        x.signal || ""
+      )
+      .toUpperCase()
+      ===
+      "BUY";
+
+
+      return `
+      <tr>
+
+        <td>
+          ${
+            x.time_utc
+            ?
+            new Date(
+              x.time_utc
+            )
+            .toLocaleString()
+            :
+            "—"
+          }
+        </td>
+
+        <td>
+
+          <strong>
+            ${x.symbol || "—"}
+          </strong>
+
+        </td>
+
+        <td
+          class="${
+            buy
+            ?
+            "good"
+            :
+            "bad"
+          }"
+        >
+
+          ${
+            buy
+            ?
+            "LONG"
+            :
+            "SHORT"
+          }
+
+        </td>
+
+        <td>
+          ${fmt(x.score,0)}
+        </td>
+
+        <td>
+          ${fmt(x.price)}
+        </td>
+
+        <td class="good">
+          ${fmt(x.tp)}
+        </td>
+
+        <td class="bad">
+          ${fmt(x.sl)}
+        </td>
+
+      </tr>
+      `;
+
+    }
+  )
+  .join("");
+
+}
+
+
+/* =========================================================
+RSI PERFORMANCE
+========================================================= */
+
+function buildRsiPerformance(
+  formingHistory
+){
+
+  const rows=
+  formingHistory || [];
+
+
+  let longWins=0;
+
+  let longLosses=0;
+
+  let shortWins=0;
+
+  let shortLosses=0;
+
+
+  rows.forEach(
+    r=>{
+
+      const side=
+      String(
+        r.signal || ""
+      )
+      .toUpperCase();
+
+
+      const status=
+      String(
+        r.status || ""
+      )
+      .toUpperCase();
+
+
+      if(
+        side==="BUY"
+        &&
+        status==="WIN"
+      ){
+
+        longWins++;
+
+      }
+
+
+      if(
+        side==="BUY"
+        &&
+        status==="LOSS"
+      ){
+
+        longLosses++;
+
+      }
+
+
+      if(
+        side==="SELL"
+        &&
+        status==="WIN"
+      ){
+
+        shortWins++;
+
+      }
+
+
+      if(
+        side==="SELL"
+        &&
+        status==="LOSS"
+      ){
+
+        shortLosses++;
+
+      }
+
+    }
+  );
+
+
+  const lt=
+  longWins
+  +
+  longLosses;
+
+
+  const st=
+  shortWins
+  +
+  shortLosses;
+
+
+  $("rsiLongTrades").textContent=
+  lt;
+
+
+  $("rsiLongWins").textContent=
+  longWins;
+
+
+  $("rsiLongLosses").textContent=
+  longLosses;
+
+
+  $("rsiLongRate").textContent=
+  (
+    lt
+    ?
+    (
+      longWins
+      /
+      lt
+      *
+      100
+    )
+    :
+    0
+  )
+  .toFixed(2)
+  +
+  "%";
+
+
+  $("rsiShortTrades").textContent=
+  st;
+
+
+  $("rsiShortWins").textContent=
+  shortWins;
+
+
+  $("rsiShortLosses").textContent=
+  shortLosses;
+
+
+  $("rsiShortRate").textContent=
+  (
+    st
+    ?
+    (
+      shortWins
+      /
+      st
+      *
+      100
+    )
+    :
+    0
+  )
+  .toFixed(2)
+  +
+  "%";
+
+}
+
+
+/* =========================================================
+API REFRESH
 ========================================================= */
 
 async function refresh(){
 
   try{
 
-    const r=
-      await fetch(
-        "/api/status",
-        {
-          cache:"no-store",
-          credentials:"same-origin"
-        }
-      );
+    const response=
+    await fetch(
+      "/api/status",
+      {
+        cache:"no-store",
+        credentials:"same-origin"
+      }
+    );
 
 
-    if(r.status===401){
+    if(
+      response.status
+      ===
+      401
+    ){
 
       location.reload();
+
       return;
+
     }
 
 
-    if(!r.ok){
+    if(!response.ok){
 
       throw new Error(
-        "API status "+r.status
+        "HTTP "
+        +
+        response.status
       );
+
     }
 
 
     const d=
-      await r.json();
+    await response.json();
 
 
-    /* SERVER LIVE */
+    /* LIVE */
 
-    document.getElementById("live").textContent=
-      d.running
-      ? "● LIVE"
-      : "● OFFLINE";
-
-
-    /* SCAN STATUS */
-
-    document.getElementById("status").textContent=
-      d.status ||
-      (
-        d.running
-        ? "SCANNING MARKET"
-        : "SCANNER OFFLINE"
-      );
+    $("live").textContent=
+    d.running
+    ?
+    "● LIVE"
+    :
+    "● OFFLINE";
 
 
-    /* IMPORTANT:
-       ALWAYS DISPLAY LIVE BEST CANDIDATE
-    */
-
-    if(d.best_candidate){
-
-      showCandidate(
-        d.best_candidate
-      );
-
-    }else{
-
-      showWaiting();
-    }
+    $("scannerLive").textContent=
+    d.running
+    ?
+    "LIVE"
+    :
+    "OFFLINE";
 
 
-    /* PERFORMANCE */
+    $("scannerLive").className=
+    d.running
+    ?
+    "statusVal good"
+    :
+    "statusVal bad";
+
+
+    /* TELEGRAM */
+
+    $("telegramStatus").textContent=
+    d.telegram
+    ?
+    "ON"
+    :
+    "OFF";
+
+
+    $("telegramStatus").className=
+    d.telegram
+    ?
+    "statusVal good"
+    :
+    "statusVal bad";
+
+
+    /* SCAN */
+
+    updateNextScan(
+      d.next_scan
+    );
+
+
+    $("lastScan").textContent=
+    d.last_scan_seconds
+    !==
+    null
+    &&
+    d.last_scan_seconds
+    !==
+    undefined
+    ?
+    d.last_scan_seconds
+    +
+    "s"
+    :
+    "—";
+
+
+    /* BEST SETUP */
+
+    showCandidate(
+      d.best_candidate
+    );
+
+
+    /* RSI WATCHLIST */
+
+    const watch=
+    d.rsi_watchlist
+    ||
+    {};
+
+
+    const longs=
+    watch.oversold_long
+    ||
+    [];
+
+
+    const shorts=
+    watch.overbought_short
+    ||
+    [];
+
+
+    renderTable(
+      "longTable",
+      longs,
+      true
+    );
+
+
+    renderTable(
+      "shortTable",
+      shorts,
+      false
+    );
+
+
+    renderGraph(
+      "longGraph",
+      longs,
+      true
+    );
+
+
+    renderGraph(
+      "shortGraph",
+      shorts,
+      false
+    );
+
+
+    renderHeatmap(
+      longs,
+      shorts
+    );
+
+
+    /* FORMING PERFORMANCE */
+
+    const f=
+    d.forming_performance
+    ||
+    {};
+
+
+    $("formingTotal").textContent=
+    f.total_setups
+    ||
+    0;
+
+
+    $("formingWins").textContent=
+    f.wins
+    ||
+    0;
+
+
+    $("formingLosses").textContent=
+    f.losses
+    ||
+    0;
+
+
+    $("formingOpen").textContent=
+    f.open
+    ||
+    0;
+
+
+    $("formingRate").textContent=
+    Number(
+      f.win_rate
+      ||
+      0
+    )
+    .toFixed(2)
+    +
+    "%";
+
+
+    $("formingAvg").textContent=
+    Number(
+      f.avg_score
+      ||
+      0
+    )
+    .toFixed(1);
+
+
+    /* STRONG PERFORMANCE */
 
     const p=
-      d.performance || {};
+    d.performance
+    ||
+    {};
 
 
-    document.getElementById("totalTrades").textContent=
-      p.total_trades ?? 0;
-
-    document.getElementById("wins").textContent=
-      p.wins ?? 0;
-
-    document.getElementById("losses").textContent=
-      p.losses ?? 0;
-
-    document.getElementById("openTrades").textContent=
-      p.open_trades ?? 0;
-
-    document.getElementById("winRate").textContent=
-      Number(
-        p.win_rate || 0
-      ).toFixed(2)+"%";
+    $("strongTotal").textContent=
+    p.total_trades
+    ||
+    0;
 
 
-    /* TELEGRAM
-       Backend currently reports credentials configured.
-    */
-
-    const tg=
-      document.getElementById("telegramStatus");
-
-    if(d.telegram){
-
-      tg.innerHTML=
-        '<span class="dot"></span> CONFIGURED';
-
-    }else{
-
-      tg.textContent="OFFLINE";
-    }
+    $("strongWins").textContent=
+    p.wins
+    ||
+    0;
 
 
-    /* HISTORY */
+    $("strongLosses").textContent=
+    p.losses
+    ||
+    0;
+
+
+    $("strongOpen").textContent=
+    p.open_trades
+    ||
+    0;
+
+
+    $("strongRate").textContent=
+    Number(
+      p.win_rate
+      ||
+      0
+    )
+    .toFixed(2)
+    +
+    "%";
+
+
+    /* RSI PERFORMANCE */
+
+    buildRsiPerformance(
+      d.forming_history
+      ||
+      []
+    );
+
+
+    /* VERIFIED HISTORY */
 
     renderHistory(
-      d.signals || []
+      d.signals
+      ||
+      []
     );
 
 
-  }catch(e){
+  }catch(error){
 
     console.error(
-      "Dashboard refresh error:",
-      e
+      "Dashboard error:",
+      error
     );
 
-    document.getElementById("live").textContent=
-      "● OFFLINE";
 
-    document.getElementById("status").textContent=
-      "DASHBOARD CONNECTION ERROR";
+    $("live").textContent=
+    "● OFFLINE";
+
+
+    $("scannerLive").textContent=
+    "CONNECTION ERROR";
+
+
+    $("scannerLive").className=
+    "statusVal bad";
+
   }
+
 }
 
 
 /* =========================================================
-   START
+START
 ========================================================= */
 
 refresh();
+
 
 setInterval(
   refresh,
