@@ -20,7 +20,7 @@ from flask import (
     url_for,
     Response,
 )
-
+# redeploy trigger
 # ============================================================
 # RAZA SHAH SIGNAL
 # BYBIT USDT PERPETUAL FUTURES
