@@ -9,6 +9,9 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+import psycopg
+from psycopg.rows import dict_row
+
 from flask import (
     Flask,
     jsonify,
@@ -28,7 +31,12 @@ from flask import (
 # ============================================================
 
 BASE_URL = "https://api.bybit.com"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+def get_db():
+    if not DATABASE_URL:
+        return None
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "900"))   # 15 minutes
 TOP_COINS = int(os.getenv("TOP_COINS", "100"))
 DEEP_CHECK = int(os.getenv("DEEP_CHECK", "25"))
@@ -205,7 +213,54 @@ def load_state_snapshot():
     except Exception as e:
         print(f"[SCANNER] STATE LOAD ERROR: {e}", flush=True)
         return None
+def init_db():
+    if not DATABASE_URL:
+        print("[DB] DATABASE_URL missing", flush=True)
+        return
 
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS trade_results (
+                        trade_id TEXT PRIMARY KEY,
+                        time_utc TEXT,
+                        closed_time_utc TEXT,
+                        symbol TEXT,
+                        signal TEXT,
+                        score DOUBLE PRECISION,
+                        entry DOUBLE PRECISION,
+                        tp DOUBLE PRECISION,
+                        sl DOUBLE PRECISION,
+                        status TEXT,
+                        exit_price DOUBLE PRECISION
+                    )
+                """)
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS forming_results (
+                        setup_id TEXT PRIMARY KEY,
+                        time_utc TEXT,
+                        closed_time_utc TEXT,
+                        symbol TEXT,
+                        signal TEXT,
+                        score DOUBLE PRECISION,
+                        risk_label TEXT,
+                        entry DOUBLE PRECISION,
+                        tp DOUBLE PRECISION,
+                        sl DOUBLE PRECISION,
+                        status TEXT,
+                        exit_price DOUBLE PRECISION
+                    )
+                """)
+
+            conn.commit()
+
+        print("[DB] PostgreSQL tables ready", flush=True)
+
+    except Exception as e:
+        print(f"[DB] INIT ERROR: {type(e).__name__}: {e}", flush=True)
 otp_lock = threading.Lock()
 otp_by_ip = {}
 authorized_ips = {}
@@ -313,47 +368,97 @@ def telegram_async(text):
 # ============================================================
 # TRADE FILE
 # ============================================================
-
 def trade_rows():
-
-    if not TRADES_FILE.exists():
+    if not DATABASE_URL:
         return []
 
     try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        trade_id,
+                        time_utc,
+                        closed_time_utc,
+                        symbol,
+                        signal,
+                        score,
+                        entry,
+                        tp,
+                        sl,
+                        status,
+                        exit_price
+                    FROM trade_results
+                    ORDER BY time_utc ASC
+                """)
+                return [dict(r) for r in cur.fetchall()]
 
-        with TRADES_FILE.open(
-            "r",
-            newline="",
-            encoding="utf-8"
-        ) as f:
-
-            return list(
-                csv.DictReader(f)
-            )
-
-    except Exception:
+    except Exception as e:
+        print(f"[DB] TRADE READ ERROR: {e}", flush=True)
         return []
 
 
 def write_trade_rows(rows):
+    if not DATABASE_URL:
+        return
 
-    with TRADES_FILE.open(
-        "w",
-        newline="",
-        encoding="utf-8"
-    ) as f:
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
 
-        w = csv.DictWriter(
-            f,
-            fieldnames=TRADE_COLUMNS
-        )
+                for r in rows:
+                    cur.execute("""
+                        INSERT INTO trade_results (
+                            trade_id,
+                            time_utc,
+                            closed_time_utc,
+                            symbol,
+                            signal,
+                            score,
+                            entry,
+                            tp,
+                            sl,
+                            status,
+                            exit_price
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (trade_id)
+                        DO UPDATE SET
+                            closed_time_utc = EXCLUDED.closed_time_utc,
+                            score = EXCLUDED.score,
+                            entry = EXCLUDED.entry,
+                            tp = EXCLUDED.tp,
+                            sl = EXCLUDED.sl,
+                            status = EXCLUDED.status,
+                            exit_price = EXCLUDED.exit_price
+                    """, (
+                        r.get("trade_id"),
+                        r.get("time_utc"),
+                        r.get("closed_time_utc") or "",
+                        r.get("symbol"),
+                        r.get("signal"),
+                        float(r.get("score") or 0),
+                        float(r.get("entry") or 0),
+                        float(r.get("tp") or 0),
+                        float(r.get("sl") or 0),
+                        r.get("status") or "OPEN",
+                        (
+                            float(r.get("exit_price"))
+                            if r.get("exit_price") not in ("", None)
+                            else None
+                        )
+                    ))
 
-        w.writeheader()
-        w.writerows(rows)
+            conn.commit()
+
+    except Exception as e:
+        print(f"[DB] TRADE WRITE ERROR: {e}", flush=True)
 
 
 def add_open_trade(row):
-
     rows = trade_rows()
 
     trade_id = (
@@ -419,37 +524,71 @@ def performance():
 # ============================================================
 # FORMING SETUP PAPER TRACKING (60-84)
 # ============================================================
-
 def forming_rows():
-    if not FORMING_FILE.exists():
+    if not DATABASE_URL:
         return []
+
     try:
-        with FORMING_FILE.open("r", newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
-    except Exception:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        setup_id,
+                        time_utc,
+                        closed_time_utc,
+                        symbol,
+                        signal,
+                        score,
+                        risk_label,
+                        entry,
+                        tp,
+                        sl,
+                        status,
+                        exit_price
+                    FROM forming_results
+                    ORDER BY time_utc ASC
+                """)
+
+                return [dict(r) for r in cur.fetchall()]
+
+    except Exception as e:
+        print(f"[DB] FORMING READ ERROR: {e}", flush=True)
         return []
-
-
-def write_forming_rows(rows):
-    with FORMING_FILE.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=FORMING_COLUMNS)
-        w.writeheader()
-        w.writerows(rows)
 
 
 def forming_performance():
     rows = forming_rows()
-    closed = [r for r in rows if r.get("status") in ("WIN", "LOSS")]
-    wins = sum(1 for r in closed if r.get("status") == "WIN")
-    losses = sum(1 for r in closed if r.get("status") == "LOSS")
+
+    closed = [
+        r for r in rows
+        if r.get("status") in ("WIN", "LOSS")
+    ]
+
+    wins = sum(
+        1 for r in closed
+        if r.get("status") == "WIN"
+    )
+
+    losses = sum(
+        1 for r in closed
+        if r.get("status") == "LOSS"
+    )
+
     total = wins + losses
-    open_count = sum(1 for r in rows if r.get("status") == "OPEN")
+
+    open_count = sum(
+        1 for r in rows
+        if r.get("status") == "OPEN"
+    )
+
     scores = []
+
     for r in rows:
         try:
-            scores.append(float(r.get("score", 0)))
+            scores.append(float(r.get("score") or 0))
         except Exception:
             pass
+
     return {
         "total_setups": len(rows),
         "closed_setups": total,
@@ -459,91 +598,175 @@ def forming_performance():
         "win_rate": round((wins / total) * 100, 2) if total else 0.0,
         "avg_score": round(sum(scores) / len(scores), 2) if scores else 0.0,
     }
-
-
 def has_recent_forming(symbol, side):
-    now = datetime.now(timezone.utc)
-    for r in forming_rows():
-        if r.get("symbol") != symbol or r.get("signal") != side:
-            continue
-        if r.get("status") == "OPEN":
-            return True
-        try:
-            t = datetime.fromisoformat(r.get("time_utc", ""))
-            if t.tzinfo is None:
-                t = t.replace(tzinfo=timezone.utc)
-            if (now - t).total_seconds() < SIGNAL_COOLDOWN_SECONDS:
+    if not DATABASE_URL:
+        return False
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        setup_id,
+                        time_utc,
+                        status
+                    FROM forming_results
+                    WHERE symbol = %s
+                      AND signal = %s
+                    ORDER BY time_utc DESC
+                """, (symbol, side))
+
+                rows = cur.fetchall()
+
+        now = datetime.now(timezone.utc)
+
+        for r in rows:
+            if r.get("status") == "OPEN":
                 return True
-        except Exception:
-            pass
-    return False
 
+            try:
+                t = datetime.fromisoformat(r.get("time_utc") or "")
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
 
+                if (now - t).total_seconds() < SIGNAL_COOLDOWN_SECONDS:
+                    return True
+
+            except Exception:
+                pass
+
+        return False
+
+    except Exception as e:
+        print(f"[DB] FORMING RECENT ERROR: {e}", flush=True)
+        return False
 def add_forming_setup(candidate):
     score = int(candidate.get("score", 0) or 0)
+
     if score < 60 or score >= MIN_SCORE:
         return False
+
     symbol = candidate.get("symbol")
     side = candidate.get("signal")
-    if not symbol or not side or has_recent_forming(symbol, side):
+
+    if not symbol or not side:
         return False
 
-    rows = forming_rows()
-    rows.append({
-        "setup_id": f"{symbol}-{int(time.time()*1000)}",
-        "time_utc": candidate.get("time_utc") or datetime.now(timezone.utc).isoformat(),
-        "closed_time_utc": "",
-        "symbol": symbol,
-        "signal": side,
-        "score": score,
-        "risk_label": candidate.get("risk_label") or risk_label(score),
-        "entry": candidate.get("price"),
-        "tp": candidate.get("tp"),
-        "sl": candidate.get("sl"),
-        "status": "OPEN",
-        "exit_price": "",
-    })
-    write_forming_rows(rows)
-    return True
+    if has_recent_forming(symbol, side):
+        return False
+
+    setup_id = f"{symbol}-{int(time.time()*1000)}"
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO forming_results (
+                        setup_id,
+                        time_utc,
+                        closed_time_utc,
+                        symbol,
+                        signal,
+                        score,
+                        risk_label,
+                        entry,
+                        tp,
+                        sl,
+                        status,
+                        exit_price
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (setup_id) DO NOTHING
+                """, (
+                    setup_id,
+                    candidate.get("time_utc")
+                    or datetime.now(timezone.utc).isoformat(),
+                    "",
+                    symbol,
+                    side,
+                    score,
+                    candidate.get("risk_label") or risk_label(score),
+                    float(candidate.get("price") or 0),
+                    float(candidate.get("tp") or 0),
+                    float(candidate.get("sl") or 0),
+                    "OPEN",
+                    None
+                ))
+
+            conn.commit()
+
+        return True
+
+    except Exception as e:
+        print(f"[DB] ADD FORMING ERROR: {e}", flush=True)
+        return False
 
 
 def check_forming_setups():
-    rows = forming_rows()
-    changed = False
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT *
+                    FROM forming_results
+                    WHERE status = 'OPEN'
+                    ORDER BY time_utc ASC
+                """)
 
-    for r in rows:
-        if r.get("status") != "OPEN":
-            continue
-        try:
-            symbol = r["symbol"]
-            side = r["signal"]
-            entry = float(r["entry"])
-            tp = float(r["tp"])
-            sl = float(r["sl"])
-            px = current_price(symbol)
+                rows = cur.fetchall()
 
-            result = None
-            if side == "BUY":
-                if px >= tp:
-                    result = "WIN"
-                elif px <= sl:
-                    result = "LOSS"
-            else:
-                if px <= tp:
-                    result = "WIN"
-                elif px >= sl:
-                    result = "LOSS"
+        for r in rows:
+            try:
+                symbol = r["symbol"]
+                side = r["signal"]
 
-            if result:
-                r["status"] = result
-                r["exit_price"] = px
-                r["closed_time_utc"] = datetime.now(timezone.utc).isoformat()
-                changed = True
-        except Exception as e:
-            scan_log(f"FORMING CHECK ERROR {r.get('symbol')}: {e}")
+                tp = float(r["tp"])
+                sl = float(r["sl"])
+                px = current_price(symbol)
 
-    if changed:
-        write_forming_rows(rows)
+                result = None
+
+                if side == "BUY":
+                    if px >= tp:
+                        result = "WIN"
+                    elif px <= sl:
+                        result = "LOSS"
+                else:
+                    if px <= tp:
+                        result = "WIN"
+                    elif px >= sl:
+                        result = "LOSS"
+
+                if result:
+                    with get_db() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                UPDATE forming_results
+                                SET
+                                    status = %s,
+                                    exit_price = %s,
+                                    closed_time_utc = %s
+                                WHERE setup_id = %s
+                            """, (
+                                result,
+                                px,
+                                datetime.now(timezone.utc).isoformat(),
+                                r["setup_id"]
+                            ))
+
+                        conn.commit()
+
+            except Exception as e:
+                scan_log(
+                    f"FORMING CHECK ERROR "
+                    f"{r.get('symbol')}: {e}"
+                )
+
+    except Exception as e:
+        print(f"[DB] FORMING CHECK DB ERROR: {e}", flush=True)
 
 # ============================================================
 # CURRENT PRICE
@@ -3237,7 +3460,7 @@ def sw():
 # ============================================================
 # START THREADS
 # ============================================================
-
+init_db()
 threading.Thread(
     target=scanner_loop,
     daemon=True
