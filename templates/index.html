@@ -152,7 +152,7 @@ function showBest(c){
   const sc=Number(c.score||0),buy=String(c.signal).toUpperCase()==="BUY",hard=c.hard_confirm===true||String(c.hard_confirm).toLowerCase()==="true",ready=sc>=85&&hard,r=c.risk_label||risk(sc);
   $("coin").textContent=c.symbol||"—";$("sideBadge").textContent=buy?(ready?"BUY / LONG":"LONG FORMING"):(ready?"SELL / SHORT":"SHORT FORMING");$("sideBadge").className="sideBadge "+(buy?"sideLong":"sideShort");
   $("riskBadge").textContent="RISK LEVEL: "+r+(r==="STRONG"?" ●":"");$("riskBadge").className="riskBadge "+riskClass(r);$("score").textContent=sc;$("scoreFill").style.width=Math.min(100,Math.max(0,sc))+"%";
-  $("setupText").textContent=ready?"TRADE READY — hard confirmation passed":"Watching for confirmation...";$("tp").textContent=fmt(c.tp);$("sl").textContent=fmt(c.sl);$("trend").textContent=c.trend_5m==="BULL"?"BULLISH":c.trend_5m==="BEAR"?"BEARISH":"—";
+  $("setupText").textContent=ready?"TRADE READY — hard confirmation passed":"Watching for confirmation...";$("entry").textContent=fmt(c.price);$("tp").textContent=fmt(c.tp);$("sl").textContent=fmt(c.sl);$("trend").textContent=c.trend_5m==="BULL"?"BULLISH":c.trend_5m==="BEAR"?"BEARISH":"—";
   $("hardConfirm").textContent=hard?"YES ✅":"NOT YET";$("hardConfirm").className="metricVal "+(hard?"good":"yellow");
   const e=N(c.price),tp=N(c.tp),sl=N(c.sl);$("rr").textContent=(e!==null&&tp!==null&&sl!==null&&Math.abs(e-sl)>0)?"1 : "+(Math.abs(tp-e)/Math.abs(e-sl)).toFixed(2):"—";
   loadChart(c.symbol);
