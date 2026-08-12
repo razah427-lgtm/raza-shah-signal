@@ -162,6 +162,7 @@ state = {
     "scan_progress": "0/0",
     "last_scan_seconds": None,
     "last_error": None,
+    "rsi_watchlist": {"oversold_long": [], "overbought_short": []},
 }
 
 
@@ -1702,6 +1703,8 @@ def candidate_payload(
         "symbol": symbol,
         "signal": side,
         "score": score,
+        "risk_label": risk_label(score),
+        "risk_level": risk_level(score),
         "price": price,
         "flow_delta": delta,
         "buy_usd_60s": buy,
@@ -1732,6 +1735,27 @@ def candidate_payload(
             "FORMING"
         ),
     }
+
+# ============================================================
+# DASHBOARD RISK CLASSIFICATION
+# ============================================================
+
+def risk_label(score):
+    """Dashboard label requested by the user; final readiness still needs hard confirmation."""
+    try:
+        score = int(score)
+    except (TypeError, ValueError):
+        score = 0
+    if score >= 85:
+        return "STRONG"
+    if score >= 70:
+        return "MEDIUM"
+    return "RISKY"
+
+
+def risk_level(score):
+    label = risk_label(score)
+    return {"RISKY": 1, "MEDIUM": 2, "STRONG": 3}[label]
 
 # ============================================================
 # LIGHT SCAN
@@ -2046,6 +2070,33 @@ def scan_once():
         reverse=True,
         key=lambda x: x[0]
     )
+
+    # Build CoinGlass-style RSI watchlist data for the web dashboard.
+    # These are scanner-computed live RSI values; they are not branded as CoinGlass data.
+    oversold_long = []
+    overbought_short = []
+    for rank, symbol, lm in light_candidates:
+        item = {
+            "symbol": symbol,
+            "rsi_15m": lm.get("rsi_15m"),
+            "rsi_1h": lm.get("rsi_1h"),
+            "rsi_4h": lm.get("rsi_4h"),
+            "rsi_bias": lm.get("rsi_bias"),
+            "rsi_rank": round(float(lm.get("rsi_rank", rank) or 0), 2),
+        }
+        if item["rsi_bias"] == "BUY":
+            oversold_long.append(item)
+        else:
+            overbought_short.append(item)
+
+    oversold_long.sort(key=lambda x: (x["rsi_15m"] if x["rsi_15m"] is not None else 999))
+    overbought_short.sort(key=lambda x: (x["rsi_15m"] if x["rsi_15m"] is not None else -1), reverse=True)
+
+    with state_lock:
+        state["rsi_watchlist"] = {
+            "oversold_long": oversold_long[:10],
+            "overbought_short": overbought_short[:10],
+        }
 
     scan_log(
         f"LIGHT SCAN COMPLETE: "
@@ -2758,6 +2809,21 @@ def api_status():
     x["performance"] = (
         performance()
     )
+
+    # Final dashboard contract. Exchange can stay internal while the UI hides its name.
+    x["dashboard"] = {
+        "risk_rules": {
+            "risky": "60-69",
+            "medium": "70-84",
+            "strong": "85+",
+            "trade_ready": "85+ AND hard confirmation"
+        },
+        "disclaimer": (
+            "Trading involves significant risk. All signals are provided for informational "
+            "purposes only. Always assess your own risk before entering a trade. "
+            "No profit or performance is guaranteed."
+        )
+    }
 
     return jsonify(x)
 
