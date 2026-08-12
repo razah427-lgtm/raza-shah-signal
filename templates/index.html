@@ -160,7 +160,7 @@ function showBest(c){
 
 function applyLiveMarket(m){
   currentMarket=m;if(!m||m.error)return;
-  $("marketAge").textContent="LIVE";$("liqCoin").textContent="• "+m.symbol;$("entry").textContent=fmt(m.price);
+  $("marketAge").textContent="LIVE";$("liqCoin").textContent="• "+m.symbol;
   $("rsi15").textContent=fmt(m.rsi_15m,1);$("rsi1h").textContent=fmt(m.rsi_1h,1);$("rsi4h").textContent=fmt(m.rsi_4h,1);
   const f=N(m.flow_delta),b=N(m.book_imb),oi=N(m.oi_change_pct);
   $("flow").textContent=f===null?"—":(f>=0?"BUY ":"SELL ")+Math.abs(f).toFixed(3);$("flow").className="metricVal "+(f!==null&&f>=0?"good":"bad");
