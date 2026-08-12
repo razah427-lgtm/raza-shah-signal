@@ -90,6 +90,7 @@ DATA_DIR.mkdir(exist_ok=True)
 LIVE_FILE = DATA_DIR / "live_signals.csv"
 TRADES_FILE = DATA_DIR / "trade_results.csv"
 STATE_FILE = DATA_DIR / "scanner_state.json"
+FORMING_FILE = DATA_DIR / "forming_results.csv"
 
 CSV_COLUMNS = [
     "time_utc",
@@ -115,6 +116,22 @@ TRADE_COLUMNS = [
     "symbol",
     "signal",
     "score",
+    "entry",
+    "tp",
+    "sl",
+    "status",
+    "exit_price",
+]
+
+
+FORMING_COLUMNS = [
+    "setup_id",
+    "time_utc",
+    "closed_time_utc",
+    "symbol",
+    "signal",
+    "score",
+    "risk_label",
     "entry",
     "tp",
     "sl",
@@ -397,6 +414,136 @@ def performance():
             if r.get("status") == "OPEN"
         ),
     }
+
+
+# ============================================================
+# FORMING SETUP PAPER TRACKING (60-84)
+# ============================================================
+
+def forming_rows():
+    if not FORMING_FILE.exists():
+        return []
+    try:
+        with FORMING_FILE.open("r", newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def write_forming_rows(rows):
+    with FORMING_FILE.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=FORMING_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+
+
+def forming_performance():
+    rows = forming_rows()
+    closed = [r for r in rows if r.get("status") in ("WIN", "LOSS")]
+    wins = sum(1 for r in closed if r.get("status") == "WIN")
+    losses = sum(1 for r in closed if r.get("status") == "LOSS")
+    total = wins + losses
+    open_count = sum(1 for r in rows if r.get("status") == "OPEN")
+    scores = []
+    for r in rows:
+        try:
+            scores.append(float(r.get("score", 0)))
+        except Exception:
+            pass
+    return {
+        "total_setups": len(rows),
+        "closed_setups": total,
+        "wins": wins,
+        "losses": losses,
+        "open": open_count,
+        "win_rate": round((wins / total) * 100, 2) if total else 0.0,
+        "avg_score": round(sum(scores) / len(scores), 2) if scores else 0.0,
+    }
+
+
+def has_recent_forming(symbol, side):
+    now = datetime.now(timezone.utc)
+    for r in forming_rows():
+        if r.get("symbol") != symbol or r.get("signal") != side:
+            continue
+        if r.get("status") == "OPEN":
+            return True
+        try:
+            t = datetime.fromisoformat(r.get("time_utc", ""))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            if (now - t).total_seconds() < SIGNAL_COOLDOWN_SECONDS:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def add_forming_setup(candidate):
+    score = int(candidate.get("score", 0) or 0)
+    if score < 60 or score >= MIN_SCORE:
+        return False
+    symbol = candidate.get("symbol")
+    side = candidate.get("signal")
+    if not symbol or not side or has_recent_forming(symbol, side):
+        return False
+
+    rows = forming_rows()
+    rows.append({
+        "setup_id": f"{symbol}-{int(time.time()*1000)}",
+        "time_utc": candidate.get("time_utc") or datetime.now(timezone.utc).isoformat(),
+        "closed_time_utc": "",
+        "symbol": symbol,
+        "signal": side,
+        "score": score,
+        "risk_label": candidate.get("risk_label") or risk_label(score),
+        "entry": candidate.get("price"),
+        "tp": candidate.get("tp"),
+        "sl": candidate.get("sl"),
+        "status": "OPEN",
+        "exit_price": "",
+    })
+    write_forming_rows(rows)
+    return True
+
+
+def check_forming_setups():
+    rows = forming_rows()
+    changed = False
+
+    for r in rows:
+        if r.get("status") != "OPEN":
+            continue
+        try:
+            symbol = r["symbol"]
+            side = r["signal"]
+            entry = float(r["entry"])
+            tp = float(r["tp"])
+            sl = float(r["sl"])
+            px = current_price(symbol)
+
+            result = None
+            if side == "BUY":
+                if px >= tp:
+                    result = "WIN"
+                elif px <= sl:
+                    result = "LOSS"
+            else:
+                if px <= tp:
+                    result = "WIN"
+                elif px >= sl:
+                    result = "LOSS"
+
+            if result:
+                r["status"] = result
+                r["exit_price"] = px
+                r["closed_time_utc"] = datetime.now(timezone.utc).isoformat()
+                changed = True
+        except Exception as e:
+            scan_log(f"FORMING CHECK ERROR {r.get('symbol')}: {e}")
+
+    if changed:
+        write_forming_rows(rows)
 
 # ============================================================
 # CURRENT PRICE
@@ -1921,6 +2068,7 @@ def scan_once():
     )
 
     check_open_trades()
+    check_forming_setups()
 
     # --------------------------------
     # TOP SYMBOLS
@@ -2123,6 +2271,7 @@ def scan_once():
     alerts = 0
     best = None
     deep_errors = []
+    deep_scored = []
 
     with ThreadPoolExecutor(
         max_workers=max(
@@ -2193,6 +2342,22 @@ def scan_once():
                 "candidate"
             ]
 
+            deep_scored.append({
+                "symbol": result.get("symbol"),
+                "signal": result.get("side"),
+                "score": result.get("score", 0),
+                "risk_label": c.get("risk_label"),
+                "rsi_15m": c.get("rsi_15m"),
+                "rsi_1h": c.get("rsi_1h"),
+                "rsi_4h": c.get("rsi_4h"),
+                "rsi_bias": c.get("rsi_bias"),
+                "book_imb": result.get("book"),
+                "flow_delta": result.get("delta"),
+                "oi_change_pct": result.get("oi"),
+                "spread_bps": result.get("spread"),
+                "hard_confirm": c.get("hard_confirm"),
+            })
+
             # -------------------------
             # BEST CANDIDATE
             # -------------------------
@@ -2230,6 +2395,9 @@ def scan_once():
                     )
 
                 save_state_snapshot()
+
+                # Paper-track 60-84 forming setups separately from verified trades.
+                add_forming_setup(best)
 
             # -------------------------
             # VERIFIED ONLY
@@ -2337,6 +2505,39 @@ def scan_once():
             )
 
             alerts += 1
+
+    # --------------------------------
+    # FINAL RSI WATCHLIST (deep-scored, actual risk labels)
+    # --------------------------------
+    long_watch = [
+        x for x in deep_scored
+        if x.get("rsi_bias") == "BUY"
+    ]
+    short_watch = [
+        x for x in deep_scored
+        if x.get("rsi_bias") == "SELL"
+    ]
+
+    long_watch.sort(
+        key=lambda x: (
+            x.get("score", 0),
+            -(x.get("rsi_15m") if x.get("rsi_15m") is not None else 999)
+        ),
+        reverse=True
+    )
+    short_watch.sort(
+        key=lambda x: (
+            x.get("score", 0),
+            x.get("rsi_15m") if x.get("rsi_15m") is not None else -1
+        ),
+        reverse=True
+    )
+
+    with state_lock:
+        state["rsi_watchlist"] = {
+            "oversold_long": long_watch[:10],
+            "overbought_short": short_watch[:10],
+        }
 
     # --------------------------------
     # FINISH
@@ -2855,7 +3056,130 @@ def api_signal():
         performance()
     )
 
+    x["forming_performance"] = forming_performance()
+    x["forming_history"] = list(reversed(forming_rows()[-20:]))
+
     return jsonify(x)
+
+
+
+@app.route("/api/live-market/<symbol>")
+def api_live_market(symbol):
+    if not is_authorized():
+        return jsonify({"error": "unauthorized"}), 401
+
+    symbol = "".join(
+        ch for ch in str(symbol or "").upper()
+        if ch.isalnum()
+    )
+
+    if not symbol.endswith("USDT"):
+        return jsonify({"error": "invalid symbol"}), 400
+
+    try:
+        # Current ticker
+        ticker = bybit_get(
+            "/v5/market/tickers",
+            {"category": "linear", "symbol": symbol}
+        )
+        tickers = ticker.get("list", [])
+        last_price = float(tickers[0].get("lastPrice", 0) or 0) if tickers else 0.0
+
+        # Real multi-timeframe RSI
+        rsi15 = timeframe_rsi(symbol, "15")
+        rsi1h = timeframe_rsi(symbol, "60")
+        rsi4h = timeframe_rsi(symbol, "240")
+
+        # Real order book levels
+        ob = bybit_get(
+            "/v5/market/orderbook",
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "limit": 25,
+            }
+        )
+
+        bids_raw = ob.get("b", [])[:12]
+        asks_raw = ob.get("a", [])[:12]
+
+        bids = []
+        asks = []
+
+        bid_usd = 0.0
+        ask_usd = 0.0
+
+        for price, qty in bids_raw:
+            p = float(price)
+            q = float(qty)
+            usd = p * q
+            bid_usd += usd
+            bids.append({
+                "price": p,
+                "qty": q,
+                "usd": usd,
+            })
+
+        for price, qty in asks_raw:
+            p = float(price)
+            q = float(qty)
+            usd = p * q
+            ask_usd += usd
+            asks.append({
+                "price": p,
+                "qty": q,
+                "usd": usd,
+            })
+
+        total_book = bid_usd + ask_usd
+        book_imb = (
+            (bid_usd - ask_usd) / total_book
+            if total_book else 0.0
+        )
+
+        best_bid = bids[0]["price"] if bids else 0.0
+        best_ask = asks[0]["price"] if asks else 0.0
+        mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0
+        spread_bps = (
+            ((best_ask - best_bid) / mid) * 10000
+            if mid else 0.0
+        )
+
+        # Real recent trade flow + OI
+        delta, buy_usd, sell_usd = flow_metrics(symbol)
+        oi = oi_change_pct(symbol)
+
+        buy_pct = (
+            (bid_usd / total_book) * 100
+            if total_book else 50.0
+        )
+        sell_pct = 100.0 - buy_pct
+
+        return jsonify({
+            "symbol": symbol,
+            "time_utc": datetime.now(timezone.utc).isoformat(),
+            "price": last_price,
+            "rsi_15m": round(rsi15, 2),
+            "rsi_1h": round(rsi1h, 2),
+            "rsi_4h": round(rsi4h, 2),
+            "bids": bids,
+            "asks": asks,
+            "bid_usd": bid_usd,
+            "ask_usd": ask_usd,
+            "buy_pct": round(buy_pct, 2),
+            "sell_pct": round(sell_pct, 2),
+            "book_imb": round(book_imb, 6),
+            "spread_bps": round(spread_bps, 4),
+            "flow_delta": round(delta, 6),
+            "buy_usd_60s": buy_usd,
+            "sell_usd_60s": sell_usd,
+            "oi_change_pct": round(oi, 6),
+        })
+
+    except Exception as e:
+        return jsonify({
+            "error": f"{type(e).__name__}: {e}"
+        }), 500
 
 
 @app.route(
