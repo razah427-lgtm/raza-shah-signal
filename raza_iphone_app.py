@@ -1,6 +1,7 @@
 import os
 import time
 import csv
+import json
 import threading
 import secrets
 from datetime import datetime, timezone, timedelta
@@ -50,8 +51,8 @@ SIGNAL_COOLDOWN_SECONDS = int(
 # TELEGRAM / WEB
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = (os.getenv("RAZA_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TELEGRAM_CHAT_ID = (os.getenv("RAZA_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 APP_URL = os.getenv(
     "APP_URL",
@@ -88,6 +89,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 LIVE_FILE = DATA_DIR / "live_signals.csv"
 TRADES_FILE = DATA_DIR / "trade_results.csv"
+STATE_FILE = DATA_DIR / "scanner_state.json"
 
 CSV_COLUMNS = [
     "time_utc",
@@ -161,6 +163,30 @@ state = {
     "last_scan_seconds": None,
     "last_error": None,
 }
+
+
+def save_state_snapshot():
+    """Persist dashboard state so /api/status survives worker/process changes."""
+    try:
+        with state_lock:
+            payload = dict(state)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except Exception as e:
+        print(f"[SCANNER] STATE SAVE ERROR: {e}", flush=True)
+
+
+def load_state_snapshot():
+    """Return last persisted scanner state, if available."""
+    try:
+        if not STATE_FILE.exists():
+            return None
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        print(f"[SCANNER] STATE LOAD ERROR: {e}", flush=True)
+        return None
 
 otp_lock = threading.Lock()
 otp_by_ip = {}
@@ -1830,6 +1856,7 @@ def scan_once():
                 2
             )
 
+        save_state_snapshot()
         return
 
     with state_lock:
@@ -2059,6 +2086,8 @@ def scan_once():
                         f"{best['score']}/100"
                     )
 
+                save_state_snapshot()
+
             # -------------------------
             # VERIFIED ONLY
             # -------------------------
@@ -2250,6 +2279,8 @@ def scan_once():
                 " | ".join(errors)
             )
 
+    save_state_snapshot()
+
 # ============================================================
 # HOURLY TELEGRAM STATUS
 # ============================================================
@@ -2334,6 +2365,7 @@ def scanner_loop():
             "BYBIT"
         )
 
+    save_state_snapshot()
     p = performance()
 
     telegram_async(
@@ -2401,6 +2433,7 @@ def scanner_loop():
                 ).isoformat()
             )
 
+        save_state_snapshot()
         time.sleep(wait)
 
 # ============================================================
@@ -2604,6 +2637,18 @@ def api_status():
     with state_lock:
         x = dict(state)
 
+    persisted = load_state_snapshot()
+    if persisted:
+        # Prefer persisted scanner results when this web worker has fresh/empty RAM state.
+        if (
+            not x.get("last_scan")
+            or (
+                persisted.get("last_scan")
+                and str(persisted.get("last_scan")) > str(x.get("last_scan") or "")
+            )
+        ):
+            x.update(persisted)
+
     x["signals"] = (
         recent_signals(20)
     )
@@ -2636,6 +2681,17 @@ def api_signal():
 
     with state_lock:
         x = dict(state)
+
+    persisted = load_state_snapshot()
+    if persisted:
+        if (
+            not x.get("last_scan")
+            or (
+                persisted.get("last_scan")
+                and str(persisted.get("last_scan")) > str(x.get("last_scan") or "")
+            )
+        ):
+            x.update(persisted)
 
     x["performance"] = (
         performance()
