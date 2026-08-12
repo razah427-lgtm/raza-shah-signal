@@ -2357,7 +2357,9 @@ def scan_once():
                 "spread_bps": result.get("spread"),
                 "hard_confirm": c.get("hard_confirm"),
             })
-
+            # AUTO TRACK EVERY 60-84 FORMING SETUP
+            if 60 <= int(score) < MIN_SCORE:
+                add_forming_setup(c)
             # -------------------------
             # BEST CANDIDATE
             # -------------------------
