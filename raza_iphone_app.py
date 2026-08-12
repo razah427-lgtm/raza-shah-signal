@@ -812,79 +812,78 @@ this IP stays authorized for 24 hours.
 def top_symbols():
 
     scan_log(
-        "TOP SYMBOLS: "
-        "loading Bybit linear tickers..."
+        "TOP SYMBOLS: loading Bybit linear tickers..."
     )
 
-    result = bybit_get(
-        "/v5/market/tickers",
-        {
-            "category": "linear"
-        },
-        timeout=10,
-    )
+    # Retry and use Bybit's alternate public host if the primary endpoint
+    # is temporarily unreachable from the hosting region.
+    hosts = [
+        BASE_URL,
+        "https://api.bytick.com",
+    ]
 
-    tickers = result.get(
-        "list",
-        []
-    )
+    last_error = None
+    result = None
 
+    for attempt in range(1, 4):
+        for host in hosts:
+            try:
+                r = session.get(
+                    host + "/v5/market/tickers",
+                    params={"category": "linear"},
+                    timeout=SCAN_HTTP_TIMEOUT,
+                )
+                r.raise_for_status()
+                data = r.json()
+
+                if data.get("retCode", -999) != 0:
+                    raise RuntimeError(
+                        f"Bybit retCode={data.get('retCode')} "
+                        f"retMsg={data.get('retMsg')}"
+                    )
+
+                result = data.get("result", {})
+                break
+
+            except Exception as e:
+                last_error = e
+                scan_log(
+                    f"TOP SYMBOLS attempt {attempt} "
+                    f"via {host}: {type(e).__name__}: {e}"
+                )
+
+        if result is not None:
+            break
+
+        time.sleep(min(2 * attempt, 5))
+
+    if result is None:
+        raise RuntimeError(
+            f"Bybit ticker endpoints unavailable: {last_error}"
+        )
+
+    tickers = result.get("list", [])
     rows = []
 
     for x in tickers:
-
         try:
+            symbol = str(x.get("symbol", ""))
 
-            symbol = str(
-                x.get(
-                    "symbol",
-                    ""
-                )
-            )
-
-            # Only USDT linear contracts
-            if not symbol.endswith(
-                "USDT"
-            ):
+            if not symbol.endswith("USDT"):
                 continue
 
-            turnover = float(
-                x.get(
-                    "turnover24h",
-                    0
-                )
-                or 0
-            )
+            turnover = float(x.get("turnover24h", 0) or 0)
+            price = float(x.get("lastPrice", 0) or 0)
 
-            price = float(
-                x.get(
-                    "lastPrice",
-                    0
-                )
-                or 0
-            )
-
-            if (
-                turnover <= 0
-                or
-                price <= 0
-            ):
+            if turnover <= 0 or price <= 0:
                 continue
 
-            rows.append(
-                (
-                    symbol,
-                    turnover
-                )
-            )
+            rows.append((symbol, turnover))
 
         except Exception:
             pass
 
-    rows.sort(
-        key=lambda z: z[1],
-        reverse=True
-    )
+    rows.sort(key=lambda z: z[1], reverse=True)
 
     symbols = [
         symbol
@@ -893,18 +892,16 @@ def top_symbols():
     ]
 
     if not symbols:
-
         raise RuntimeError(
-            "No Bybit USDT "
-            "linear symbols found"
+            "No Bybit USDT linear symbols found"
         )
 
     scan_log(
-        f"TOP SYMBOLS LOADED: "
-        f"{len(symbols)}"
+        f"TOP SYMBOLS LOADED: {len(symbols)}"
     )
 
     return symbols
+
 
 # ============================================================
 # KLINES
@@ -957,12 +954,89 @@ def ema(values, n):
 
     return e
 
+
+# ============================================================
+# RSI / MULTI-TIMEFRAME SHORTLIST
+# ============================================================
+
+def rsi(values, period=14):
+    if len(values) < period + 1:
+        return 50.0
+
+    gains = []
+    losses = []
+
+    for i in range(1, len(values)):
+        change = values[i] - values[i - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def timeframe_rsi(symbol, interval, limit=80):
+    rows = klines(symbol, interval, limit)
+    closes = [float(x[4]) for x in rows]
+
+    if len(closes) < 20:
+        raise RuntimeError(f"Not enough {interval} candles for {symbol}")
+
+    return rsi(closes, 14)
+
+
+def rsi_shortlist_metrics(symbol):
+    """
+    RSI is a shortlist/ranking filter, not a standalone trade trigger.
+    Bybit intervals: 15, 60, 240 = 15m, 1H, 4H.
+    """
+    r15 = timeframe_rsi(symbol, "15")
+    r1h = timeframe_rsi(symbol, "60")
+    r4h = timeframe_rsi(symbol, "240")
+
+    # Higher value = more interesting directional setup.
+    # BUY bias: 15m is relatively washed out while 1H/4H retain strength.
+    buy_rank = (
+        max(0.0, 50.0 - r15) * 1.5
+        + max(0.0, r1h - 45.0)
+        + max(0.0, r4h - 45.0)
+    )
+
+    # SELL bias: 15m is relatively stretched while 1H/4H retain weakness.
+    sell_rank = (
+        max(0.0, r15 - 50.0) * 1.5
+        + max(0.0, 55.0 - r1h)
+        + max(0.0, 55.0 - r4h)
+    )
+
+    bias = "BUY" if buy_rank >= sell_rank else "SELL"
+    rank = max(buy_rank, sell_rank)
+
+    return {
+        "rsi_15m": round(r15, 2),
+        "rsi_1h": round(r1h, 2),
+        "rsi_4h": round(r4h, 2),
+        "rsi_bias": bias,
+        "rsi_rank": rank,
+    }
+
 # ============================================================
 # LIGHT METRICS
 # ============================================================
 
 def light_metrics(symbol):
 
+    # Fast 5m market structure / volume scan.
     k = klines(
         symbol,
         "5",
@@ -1023,12 +1097,17 @@ def light_metrics(symbol):
         else 0
     )
 
+    # New: 15m + 1H + 4H RSI shortlist data.
+    rsi_data = rsi_shortlist_metrics(symbol)
+
     return {
         "price": closes[-1],
         "trend": trend,
         "momentum": momentum,
         "vol_ratio": vol_ratio,
+        **rsi_data,
     }
+
 
 # ============================================================
 # ORDER BOOK
@@ -1406,6 +1485,11 @@ def build_score(
     if oi > 0:
         score += 5
 
+    # Multi-timeframe RSI alignment (confirmation only).
+    # This cannot create a signal by itself.
+    if light.get("rsi_bias") == side:
+        score += 5
+
     return (
         side,
         min(
@@ -1625,6 +1709,10 @@ def candidate_payload(
         "spread_bps": spread,
         "book_imb": book,
         "trend_5m": lm["trend"],
+        "rsi_15m": lm.get("rsi_15m"),
+        "rsi_1h": lm.get("rsi_1h"),
+        "rsi_4h": lm.get("rsi_4h"),
+        "rsi_bias": lm.get("rsi_bias"),
         "oi_change_pct": oi,
         "tp": tp,
         "sl": sl,
@@ -1660,7 +1748,11 @@ def _light_scan_one(symbol):
         if not lm:
             return None
 
+        # RSI is used for shortlist ranking only.
+        # Final trade still requires flow + order book + OI + 85 score.
         rank = (
+            lm["rsi_rank"] * 2
+            +
             lm["vol_ratio"] * 3
             +
             abs(
