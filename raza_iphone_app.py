@@ -2696,7 +2696,31 @@ def telegram_hourly_status_loop():
             scan_log(
                 f"HOURLY STATUS ERROR: {e}"
             )
+# ============================================================
+# LIVE TP / SL MONITOR
+# ============================================================
 
+TRADE_MONITOR_INTERVAL = int(
+    os.getenv("TRADE_MONITOR_INTERVAL", "10")
+)
+
+def trade_monitor_loop():
+
+    scan_log("LIVE TP/SL MONITOR STARTED")
+
+    while True:
+
+        try:
+            check_open_trades()
+            check_forming_setups()
+
+        except Exception as e:
+            scan_log(
+                f"TP/SL MONITOR ERROR: "
+                f"{type(e).__name__}: {e}"
+            )
+
+        time.sleep(TRADE_MONITOR_INTERVAL)
 # ============================================================
 # SCANNER LOOP
 # ============================================================
@@ -3223,7 +3247,10 @@ threading.Thread(
     target=telegram_hourly_status_loop,
     daemon=True
 ).start()
-
+threading.Thread(
+    target=trade_monitor_loop,
+    daemon=True
+).start()
 # ============================================================
 # LOCAL RUN
 # ============================================================
