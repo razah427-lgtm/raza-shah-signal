@@ -7,19 +7,13 @@
 content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style"
-content="black-translucent">
-
-<meta name="apple-mobile-web-app-title"
-content="RAZA Signal">
-
-<meta name="theme-color"
-content="#06110c">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RAZA Signal">
+<meta name="theme-color" content="#06110c">
 
 <title>RAZA SHAH SIGNAL</title>
 
 <style>
-
 :root{
   --bg:#06110c;
   --card:#0c1b13;
@@ -27,6 +21,7 @@ content="#06110c">
   --green:#62f59a;
   --red:#ff6a7a;
   --yellow:#ffd666;
+  --blue:#67b7ff;
   --txt:#f3fff8;
   --muted:#91a89b;
 }
@@ -40,23 +35,15 @@ html,body{
   margin:0;
   background:var(--bg);
   color:var(--txt);
-  font-family:
-  -apple-system,
-  BlinkMacSystemFont,
-  "SF Pro Display",
-  "Segoe UI",
-  sans-serif;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
 
 body{
-  padding:
-  env(safe-area-inset-top)
-  0
-  env(safe-area-inset-bottom);
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
 }
 
 .app{
-  max-width:720px;
+  max-width:760px;
   margin:auto;
   padding:14px 14px 36px;
 }
@@ -65,12 +52,13 @@ body{
   display:flex;
   align-items:center;
   justify-content:space-between;
+  gap:10px;
   margin:6px 0 14px;
 }
 
 .brand{
   font-weight:900;
-  letter-spacing:.7px;
+  letter-spacing:.6px;
   font-size:18px;
 }
 
@@ -81,23 +69,16 @@ body{
   color:#7cf4aa;
   border-radius:999px;
   padding:7px 10px;
+  white-space:nowrap;
 }
 
 .card{
-  background:
-  linear-gradient(
-  180deg,
-  #0d1d15,
-  #09150f
-  );
-
+  background:linear-gradient(180deg,#0d1d15,#09150f);
   border:1px solid var(--line);
   border-radius:22px;
   padding:18px;
   margin-bottom:13px;
-
-  box-shadow:
-  0 18px 40px #0007;
+  box-shadow:0 18px 40px #0007;
 }
 
 .hero{
@@ -107,41 +88,27 @@ body{
 
 .readyLabel{
   color:var(--muted);
-  font-size:12px;
+  font-size:11px;
   letter-spacing:1px;
   font-weight:800;
   margin-bottom:7px;
 }
 
 .coin{
-  color:var(--txt);
   font-size:27px;
   font-weight:950;
-  letter-spacing:.5px;
 }
 
 .side{
-  font-size:44px;
+  font-size:40px;
   font-weight:950;
-  letter-spacing:-1px;
   margin:8px 0;
 }
 
-.buy{
-  color:var(--green);
-}
-
-.sell{
-  color:var(--red);
-}
-
-.wait{
-  color:#c6d4cc;
-}
-
-.forming{
-  color:var(--yellow);
-}
+.buy{color:var(--green);}
+.sell{color:var(--red);}
+.forming{color:var(--yellow);}
+.wait{color:#c6d4cc;}
 
 .entry{
   color:var(--muted);
@@ -159,13 +126,8 @@ body{
 .scorefill{
   height:100%;
   width:0;
-  background:
-  linear-gradient(
-  90deg,
-  #39d976,
-  #7af8aa
-  );
-  transition:.4s;
+  background:linear-gradient(90deg,#39d976,#7af8aa);
+  transition:.35s;
 }
 
 .grid,
@@ -179,7 +141,7 @@ body{
 .perf-tile{
   background:#08130e;
   border:1px solid #173123;
-  border-radius:17px;
+  border-radius:16px;
   padding:13px;
 }
 
@@ -197,23 +159,10 @@ body{
   word-break:break-word;
 }
 
-.perf-value{
-  font-size:25px;
-  font-weight:950;
-  margin-top:6px;
-}
-
-.good{
-  color:var(--green);
-}
-
-.bad{
-  color:var(--red);
-}
-
-.yellow{
-  color:var(--yellow);
-}
+.good{color:var(--green);}
+.bad{color:var(--red);}
+.yellow{color:var(--yellow);}
+.blue{color:var(--blue);}
 
 .tradeStatus{
   margin-top:14px;
@@ -223,10 +172,10 @@ body{
   border-radius:16px;
 }
 
-.tradeStatus .bigStatus{
+.bigStatus{
   display:block;
   margin-top:5px;
-  font-size:17px;
+  font-size:16px;
   font-weight:900;
 }
 
@@ -252,11 +201,115 @@ h3{
   font-size:13px;
 }
 
-.badge{
-  font-size:12px;
+.statusline{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-top:12px;
+  padding-top:12px;
+  border-top:1px solid #173123;
+}
+
+.dot{
+  display:inline-block;
+  width:9px;
+  height:9px;
+  border-radius:50%;
+  background:var(--green);
+  margin-right:6px;
+}
+
+.perf-value{
+  font-size:24px;
+  font-weight:950;
+  margin-top:6px;
+}
+
+/* CHART */
+
+.chartTop{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  margin-bottom:12px;
+}
+
+.chartSymbol{
+  color:var(--green);
   font-weight:900;
-  padding:5px 9px;
-  border-radius:10px;
+  font-size:12px;
+}
+
+.searchBar{
+  display:flex;
+  gap:8px;
+  margin-bottom:12px;
+}
+
+.searchBar input{
+  flex:1;
+  min-width:0;
+  background:#08130e;
+  border:1px solid #244431;
+  border-radius:12px;
+  padding:12px;
+  color:white;
+  font-size:15px;
+  outline:none;
+}
+
+.searchBar button{
+  border:0;
+  background:#57e88c;
+  color:#031108;
+  font-weight:900;
+  border-radius:12px;
+  padding:0 15px;
+  cursor:pointer;
+}
+
+.chartWrap{
+  width:100%;
+  height:470px;
+  background:#08130e;
+  overflow:hidden;
+  border-radius:16px;
+  border:1px solid #173123;
+}
+
+#tvChart{
+  width:100%;
+  height:100%;
+}
+
+.chartLevels{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:8px;
+  margin-top:10px;
+}
+
+.level{
+  background:#08130e;
+  border:1px solid #173123;
+  border-radius:12px;
+  padding:10px 5px;
+  text-align:center;
+}
+
+.level strong{
+  display:block;
+  margin-top:4px;
+  font-size:14px;
+  overflow-wrap:anywhere;
+}
+
+.badge{
+  font-size:11px;
+  font-weight:900;
+  padding:5px 8px;
+  border-radius:9px;
 }
 
 .bBuy{
@@ -269,86 +322,26 @@ h3{
   color:#ff8290;
 }
 
-.statusline{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-
-  margin-top:12px;
-  padding-top:12px;
-
-  border-top:
-  1px solid #173123;
-}
-
-.dot{
-  display:inline-block;
-  width:9px;
-  height:9px;
-  border-radius:50%;
-  background:var(--green);
-  margin-right:6px;
-}
-
-.chartHead{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  margin-bottom:12px;
-}
-
-.chartCoin{
-  font-size:13px;
-  color:var(--green);
-  font-weight:900;
-}
-
-.chartWrap{
-  overflow:hidden;
-  border-radius:16px;
-  border:1px solid #173123;
-  background:#08130e;
-}
-
-#tradingview_chart{
-  width:100%;
-  height:430px;
-}
-
-.chartLevels{
-  display:grid;
-  grid-template-columns:
-  repeat(3,1fr);
-  gap:8px;
-  margin-top:10px;
-}
-
-.levelBox{
-  text-align:center;
-  padding:10px 6px;
-  background:#08130e;
-  border:
-  1px solid #173123;
-  border-radius:12px;
-}
-
-.levelBox strong{
-  display:block;
-  margin-top:4px;
-  font-size:14px;
-}
-
 .foot{
   text-align:center;
   color:#6f8579;
-  font-size:11px;
-  padding:8px 6px;
+  font-size:10px;
+  padding:8px;
 }
 
-@media(max-width:430px){
+@media(max-width:480px){
+  .app{
+    padding-left:10px;
+    padding-right:10px;
+  }
+
+  .card{
+    padding:14px;
+    border-radius:18px;
+  }
 
   .side{
-    font-size:37px;
+    font-size:34px;
   }
 
   .coin{
@@ -356,171 +349,93 @@ h3{
   }
 
   .val{
-    font-size:16px;
+    font-size:15px;
   }
 
-  #tradingview_chart{
-    height:360px;
+  .chartWrap{
+    height:390px;
   }
 
+  .brand{
+    font-size:14px;
+  }
 }
-
 </style>
-
-<script src="https://s3.tradingview.com/tv.js"></script>
-
 </head>
 
 <body>
 
 <div class="app">
 
-  <!-- HEADER -->
-
   <div class="head">
-
-    <div class="brand">
-      ⚡ RAZA SHAH SIGNAL
-    </div>
-
-    <div class="live"
-    id="live">
-      ● CONNECTING
-    </div>
-
+    <div class="brand">⚡ RAZA SHAH SIGNAL</div>
+    <div class="live" id="live">● CONNECTING</div>
   </div>
 
 
-  <!-- MAIN SIGNAL -->
+  <!-- BEST LIVE SETUP -->
 
   <div class="card hero">
 
-    <div class="readyLabel"
-    id="readyLabel">
+    <div class="readyLabel" id="readyLabel">
       LIVE MARKET SCANNER
     </div>
 
-    <div class="coin"
-    id="coin">
+    <div class="coin" id="coin">
       SCANNING MARKET...
     </div>
 
-    <div class="side wait"
-    id="side">
+    <div class="side wait" id="side">
       WAIT
     </div>
 
-    <div class="entry"
-    id="entry">
-      Waiting for market scan
+    <div class="entry" id="entry">
+      Waiting for live market scan
     </div>
 
     <div class="scorebar">
-      <div class="scorefill"
-      id="scorefill">
-      </div>
+      <div class="scorefill" id="scorefill"></div>
     </div>
-
 
     <div class="grid">
 
       <div class="tile">
-
-        <div class="lab">
-          Coin
-        </div>
-
-        <div class="val"
-        id="coinBox">
-          —
-        </div>
-
+        <div class="lab">Coin</div>
+        <div class="val" id="coinBox">—</div>
       </div>
 
-
       <div class="tile">
-
-        <div class="lab">
-          Direction
-        </div>
-
-        <div class="val"
-        id="directionBox">
-          WAIT
-        </div>
-
+        <div class="lab">Direction</div>
+        <div class="val" id="directionBox">WAIT</div>
       </div>
 
-
       <div class="tile">
-
-        <div class="lab">
-          Score
-        </div>
-
-        <div class="val"
-        id="score">
-          —
-        </div>
-
+        <div class="lab">Live Score</div>
+        <div class="val" id="score">—</div>
       </div>
 
-
       <div class="tile">
-
-        <div class="lab">
-          Entry Price
-        </div>
-
-        <div class="val"
-        id="entryBox">
-          —
-        </div>
-
+        <div class="lab">Price / Entry</div>
+        <div class="val" id="entryBox">—</div>
       </div>
 
-
       <div class="tile">
-
-        <div class="lab">
-          Take Profit
-        </div>
-
-        <div class="val good"
-        id="tp">
-          —
-        </div>
-
+        <div class="lab">Take Profit</div>
+        <div class="val good" id="tp">—</div>
       </div>
 
-
       <div class="tile">
-
-        <div class="lab">
-          Stop Loss
-        </div>
-
-        <div class="val bad"
-        id="sl">
-          —
-        </div>
-
+        <div class="lab">Stop Loss</div>
+        <div class="val bad" id="sl">—</div>
       </div>
 
     </div>
 
-
     <div class="tradeStatus">
-
-      <div class="lab">
-        Trade Status
-      </div>
-
-      <span class="bigStatus"
-      id="status">
+      <div class="lab">Scanner Status</div>
+      <span class="bigStatus" id="status">
         STARTING SCANNER...
       </span>
-
     </div>
 
   </div>
@@ -530,166 +445,42 @@ h3{
 
   <div class="card">
 
-    <div class="chartHead">
-
-      <h3 style="margin:0">
-        📈 LIVE 15M CHART
-      </h3>
-
-      <div class="chartCoin"
-      id="chartCoin">
-        BTCUSDT
-      </div>
-
+    <div class="chartTop">
+      <h3 style="margin:0">📈 LIVE INTERACTIVE CHART</h3>
+      <div class="chartSymbol" id="chartSymbol">BTCUSDT • 15M</div>
     </div>
 
+    <div class="searchBar">
+      <input
+        id="manualSymbol"
+        placeholder="Type coin e.g. ETHUSDT"
+        autocomplete="off"
+      >
+      <button onclick="manualChart()">
+        SHOW
+      </button>
+    </div>
 
     <div class="chartWrap">
-
-      <div id="tradingview_chart">
-      </div>
-
+      <div id="tvChart"></div>
     </div>
-
 
     <div class="chartLevels">
 
-      <div class="levelBox">
-
-        <div class="lab">
-          ENTRY
-        </div>
-
-        <strong id="chartEntry">
-          —
-        </strong>
-
+      <div class="level">
+        <div class="lab">ENTRY</div>
+        <strong id="chartEntry">—</strong>
       </div>
 
-
-      <div class="levelBox">
-
-        <div class="lab">
-          TP
-        </div>
-
-        <strong class="good"
-        id="chartTP">
-          —
-        </strong>
-
+      <div class="level">
+        <div class="lab">TP</div>
+        <strong class="good" id="chartTP">—</strong>
       </div>
 
-
-      <div class="levelBox">
-
-        <div class="lab">
-          SL
-        </div>
-
-        <strong class="bad"
-        id="chartSL">
-          —
-        </strong>
-
+      <div class="level">
+        <div class="lab">SL</div>
+        <strong class="bad" id="chartSL">—</strong>
       </div>
-
-    </div>
-
-  </div>
-
-
-  <!-- PERFORMANCE -->
-
-  <div class="card">
-
-    <h3>
-      📊 ALL-TIME PERFORMANCE — 85+ TRADES
-    </h3>
-
-
-    <div class="perf-grid">
-
-      <div class="perf-tile">
-
-        <div class="lab">
-          Total Trades
-        </div>
-
-        <div class="perf-value"
-        id="totalTrades">
-          0
-        </div>
-
-      </div>
-
-
-      <div class="perf-tile">
-
-        <div class="lab">
-          Winning %
-        </div>
-
-        <div class="perf-value good"
-        id="winRate">
-          0.00%
-        </div>
-
-      </div>
-
-
-      <div class="perf-tile">
-
-        <div class="lab">
-          Wins
-        </div>
-
-        <div class="perf-value good"
-        id="wins">
-          0
-        </div>
-
-      </div>
-
-
-      <div class="perf-tile">
-
-        <div class="lab">
-          Losses
-        </div>
-
-        <div class="perf-value bad"
-        id="losses">
-          0
-        </div>
-
-      </div>
-
-    </div>
-
-
-    <div class="statusline">
-
-      <span class="muted">
-        Open Trades
-      </span>
-
-      <strong id="openTrades">
-        0
-      </strong>
-
-    </div>
-
-
-    <div class="statusline">
-
-      <span class="muted">
-        Telegram
-      </span>
-
-      <strong id="telegramStatus">
-        CHECKING
-      </strong>
 
     </div>
 
@@ -700,86 +491,96 @@ h3{
 
   <div class="card">
 
-    <h3>
-      🔍 LIVE TRADE CONFIRMATION
-    </h3>
-
+    <h3>🔍 LIVE TRADE CONFIRMATION</h3>
 
     <div class="row">
-
-      <span class="muted">
-        Volume / Flow Delta
-      </span>
-
-      <strong id="flow">
-        —
-      </strong>
-
+      <span class="muted">Volume / Flow Delta</span>
+      <strong id="flow">—</strong>
     </div>
 
-
     <div class="row">
-
-      <span class="muted">
-        Order Book
-      </span>
-
-      <strong id="book">
-        —
-      </strong>
-
+      <span class="muted">Order Book</span>
+      <strong id="book">—</strong>
     </div>
 
-
     <div class="row">
-
-      <span class="muted">
-        Spread
-      </span>
-
-      <strong id="spread">
-        —
-      </strong>
-
+      <span class="muted">Spread</span>
+      <strong id="spread">—</strong>
     </div>
 
+    <div class="row">
+      <span class="muted">Open Interest</span>
+      <strong id="oi">—</strong>
+    </div>
 
     <div class="row">
-
-      <span class="muted">
-        Open Interest
-      </span>
-
-      <strong id="oi">
-        —
-      </strong>
-
+      <span class="muted">Hard Confirmation</span>
+      <strong id="hardConfirm">—</strong>
     </div>
 
   </div>
 
 
-  <!-- HISTORY -->
+  <!-- PERFORMANCE -->
 
   <div class="card">
 
-    <h3>
-      📋 RECENT 85+ SIGNALS
-    </h3>
+    <h3>📊 VERIFIED 85+ TRADE PERFORMANCE</h3>
+
+    <div class="perf-grid">
+
+      <div class="perf-tile">
+        <div class="lab">Closed Trades</div>
+        <div class="perf-value" id="totalTrades">0</div>
+      </div>
+
+      <div class="perf-tile">
+        <div class="lab">Winning %</div>
+        <div class="perf-value good" id="winRate">0.00%</div>
+      </div>
+
+      <div class="perf-tile">
+        <div class="lab">Wins</div>
+        <div class="perf-value good" id="wins">0</div>
+      </div>
+
+      <div class="perf-tile">
+        <div class="lab">Losses</div>
+        <div class="perf-value bad" id="losses">0</div>
+      </div>
+
+    </div>
+
+    <div class="statusline">
+      <span class="muted">Open Verified Trades</span>
+      <strong id="openTrades">0</strong>
+    </div>
+
+    <div class="statusline">
+      <span class="muted">Telegram</span>
+      <strong id="telegramStatus">CHECKING</strong>
+    </div>
+
+  </div>
+
+
+  <!-- RECENT SIGNALS -->
+
+  <div class="card">
+
+    <h3>📋 RECENT VERIFIED 85+ SIGNALS</h3>
 
     <div id="history">
-
       <div class="muted">
         No verified 85+ signal yet.
       </div>
-
     </div>
 
   </div>
 
 
   <div class="foot">
-    RAZA SHAH SIGNAL • 85+ VERIFIED SIGNALS • SIGNAL ONLY
+    RAZA SHAH SIGNAL • LIVE SCANNER • SIGNAL ONLY • NO AUTO ORDER EXECUTION
   </div>
 
 </div>
@@ -787,695 +588,460 @@ h3{
 
 <script>
 
-/* ===================================================
-   BASIC FORMAT
-=================================================== */
+/* =========================================================
+   HELPERS
+========================================================= */
 
-function f(n,d=8){
+function fmt(n,d=8){
+  const x=Number(n);
 
-  let x=Number(n);
+  if(!Number.isFinite(x)){
+    return "—";
+  }
 
-  return Number.isFinite(x)
-  ? x.toLocaleString(
-      undefined,
-      {
-        maximumFractionDigits:d
-      }
-    )
-  : "—";
-
+  return x.toLocaleString(
+    undefined,
+    {maximumFractionDigits:d}
+  );
 }
 
 
 function shortTime(s){
-
   try{
-
-    return new Date(s)
-    .toLocaleString();
-
+    return new Date(s).toLocaleString();
   }catch(e){
-
     return s || "—";
-
   }
-
 }
 
 
-/* ===================================================
-   TRADINGVIEW LIVE CHART
-=================================================== */
-
-let currentChartSymbol="";
-let chartTimer=null;
-
-
-function cleanSymbol(symbol){
-
-  if(!symbol){
-    return "BTCUSDT";
-  }
-
-  return String(symbol)
-  .toUpperCase()
-  .replace(/[^A-Z0-9]/g,"");
-
+function cleanCoin(s){
+  return String(s || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g,"");
 }
 
 
-function loadChart(symbol){
+/* =========================================================
+   OFFICIAL TRADINGVIEW ADVANCED CHART
+========================================================= */
 
-  symbol=cleanSymbol(symbol);
+let currentChartCoin="";
+let scannerControlsChart=true;
 
-  if(
-    symbol===currentChartSymbol
-    &&
-    document.querySelector(
-      "#tradingview_chart iframe"
-    )
-  ){
+
+function tradingViewSymbol(coin){
+
+  coin=cleanCoin(coin);
+
+  if(!coin){
+    coin="BTCUSDT";
+  }
+
+  /*
+    Binance USDT perpetual futures symbols
+    on TradingView commonly use .P
+  */
+
+  return "BINANCE:" + coin + ".P";
+}
+
+
+function loadChart(coin,force=false){
+
+  coin=cleanCoin(coin);
+
+  if(!coin){
+    coin="BTCUSDT";
+  }
+
+  if(!force && coin===currentChartCoin){
     return;
   }
 
-  currentChartSymbol=symbol;
+  currentChartCoin=coin;
 
-  document.getElementById(
-    "chartCoin"
-  ).textContent=symbol+" • 15M";
+  document.getElementById("chartSymbol").textContent=
+    coin+" • 15M";
 
+  const container=
+    document.getElementById("tvChart");
 
-  let box=
-  document.getElementById(
-    "tradingview_chart"
-  );
+  container.innerHTML="";
 
-  box.innerHTML="";
+  const widget=document.createElement("div");
+  widget.className="tradingview-widget-container";
+  widget.style.width="100%";
+  widget.style.height="100%";
 
+  const inner=document.createElement("div");
+  inner.className="tradingview-widget-container__widget";
+  inner.style.width="100%";
+  inner.style.height="100%";
 
-  if(
-    typeof TradingView==="undefined"
-  ){
+  widget.appendChild(inner);
+  container.appendChild(widget);
 
-    if(chartTimer){
-      clearTimeout(chartTimer);
-    }
+  const script=document.createElement("script");
 
-    chartTimer=setTimeout(
-      function(){
-        loadChart(symbol);
-      },
-      1000
-    );
+  script.type="text/javascript";
 
-    return;
-  }
+  script.src=
+    "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
 
+  script.async=true;
 
-  try{
+  script.textContent=JSON.stringify({
 
-    new TradingView.widget({
+    autosize:true,
 
-      autosize:true,
+    symbol:tradingViewSymbol(coin),
 
-      symbol:
-      "BINANCE:"+
-      symbol+
-      ".P",
+    interval:"15",
 
-      interval:"15",
+    timezone:"Etc/UTC",
 
-      timezone:
-      "Etc/UTC",
+    theme:"dark",
 
-      theme:"dark",
+    style:"1",
 
-      style:"1",
+    locale:"en",
 
-      locale:"en",
+    backgroundColor:"rgba(6,17,12,1)",
 
-      toolbar_bg:
-      "#06110c",
+    gridColor:"rgba(28,57,41,0.35)",
 
-      enable_publishing:false,
+    allow_symbol_change:true,
 
-      allow_symbol_change:true,
+    calendar:false,
 
-      hide_side_toolbar:false,
+    support_host:
+      "https://www.tradingview.com"
 
-      withdateranges:true,
+  });
 
-      save_image:false,
-
-      container_id:
-      "tradingview_chart"
-
-    });
-
-  }catch(e){
-
-    console.log(
-      "Chart error",
-      e
-    );
-
-  }
-
+  widget.appendChild(script);
 }
 
 
-/* default chart */
+/* DEFAULT */
 
-loadChart("BTCUSDT");
+loadChart("BTCUSDT",true);
 
 
-/* ===================================================
-   WAITING MODE
-=================================================== */
+/* USER MANUAL SYMBOL */
+
+function manualChart(){
+
+  const input=
+    document.getElementById("manualSymbol");
+
+  const coin=
+    cleanCoin(input.value);
+
+  if(!coin){
+    return;
+  }
+
+  scannerControlsChart=false;
+
+  loadChart(coin,true);
+
+  input.value="";
+}
+
+
+/* ENTER KEY */
+
+document
+.getElementById("manualSymbol")
+.addEventListener("keydown",function(e){
+
+  if(e.key==="Enter"){
+    manualChart();
+  }
+
+});
+
+
+/* =========================================================
+   WAITING UI
+========================================================= */
 
 function showWaiting(){
 
-  document.getElementById(
-    "readyLabel"
-  ).textContent=
-  "LIVE MARKET SCANNER";
+  document.getElementById("readyLabel").textContent=
+    "LIVE MARKET SCANNER";
 
+  document.getElementById("coin").textContent=
+    "SCANNING MARKET...";
 
-  document.getElementById(
-    "coin"
-  ).textContent=
-  "SCANNING MARKET...";
-
-
-  let side=
-  document.getElementById(
-    "side"
-  );
+  const side=document.getElementById("side");
 
   side.textContent="WAIT";
   side.className="side wait";
 
+  document.getElementById("entry").textContent=
+    "Waiting for best live setup";
 
-  document.getElementById(
-    "entry"
-  ).textContent=
-  "Waiting for best trade setup";
+  document.getElementById("coinBox").textContent="—";
 
+  document.getElementById("directionBox").textContent="WAIT";
+  document.getElementById("directionBox").className="val";
 
-  document.getElementById(
-    "coinBox"
-  ).textContent="—";
+  document.getElementById("score").textContent="—";
+  document.getElementById("entryBox").textContent="—";
 
+  document.getElementById("tp").textContent="—";
+  document.getElementById("sl").textContent="—";
 
-  document.getElementById(
-    "directionBox"
-  ).textContent="WAIT";
+  document.getElementById("flow").textContent="—";
+  document.getElementById("book").textContent="—";
+  document.getElementById("spread").textContent="—";
+  document.getElementById("oi").textContent="—";
+  document.getElementById("hardConfirm").textContent="—";
 
+  document.getElementById("scorefill").style.width="0%";
 
-  document.getElementById(
-    "directionBox"
-  ).className="val";
-
-
-  document.getElementById(
-    "score"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "entryBox"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "tp"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "sl"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "flow"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "book"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "spread"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "oi"
-  ).textContent="—";
-
-
-  document.getElementById(
-    "scorefill"
-  ).style.width="0%";
-
+  document.getElementById("chartEntry").textContent="—";
+  document.getElementById("chartTP").textContent="—";
+  document.getElementById("chartSL").textContent="—";
 }
 
 
-/* ===================================================
-   SHOW CANDIDATE
-=================================================== */
+/* =========================================================
+   DISPLAY BEST CANDIDATE
+========================================================= */
 
-function showCandidate(
-  s,
-  verified=false
-){
+function showCandidate(s){
 
   if(!s){
     showWaiting();
     return;
   }
 
+  const coin=cleanCoin(s.symbol);
 
-  let symbol=
-  cleanSymbol(
-    s.symbol
-  );
+  const score=Number(s.score || 0);
 
+  const isBuy=
+    String(s.signal || "").toUpperCase()==="BUY";
 
-  let isBuy=
-  String(
-    s.signal || ""
-  ).toUpperCase()==="BUY";
+  const hard=
+    s.hard_confirm===true ||
+    String(s.hard_confirm).toLowerCase()==="true";
 
-
-  let score=
-  Number(
-    s.score || 0
-  );
+  const verified=
+    score>=85 && hard;
 
 
-  /* -------- LABEL -------- */
+  /* LABEL */
 
-  if(verified){
-
-    document.getElementById(
-      "readyLabel"
-    ).textContent=
-    "🔥 VERIFIED 85+ TRADE READY";
-
-  }else{
-
-    document.getElementById(
-      "readyLabel"
-    ).textContent=
-    "⚡ BEST FORMING SETUP";
-
-  }
+  document.getElementById("readyLabel").textContent=
+    verified
+    ? "🔥 VERIFIED 85+ TRADE READY"
+    : "⚡ BEST LIVE FORMING SETUP";
 
 
-  /* -------- SYMBOL -------- */
+  /* SYMBOL */
 
-  document.getElementById(
-    "coin"
-  ).textContent=
-  symbol;
+  document.getElementById("coin").textContent=
+    coin || "—";
 
-
-  document.getElementById(
-    "coinBox"
-  ).textContent=
-  symbol;
+  document.getElementById("coinBox").textContent=
+    coin || "—";
 
 
-  /* -------- SIDE -------- */
+  /* SIDE */
 
-  let side=
-  document.getElementById(
-    "side"
-  );
+  const side=
+    document.getElementById("side");
 
-
-  let direction=
-  document.getElementById(
-    "directionBox"
-  );
+  const direction=
+    document.getElementById("directionBox");
 
 
   if(isBuy){
 
     side.textContent=
-    verified
-    ? "BUY / LONG"
-    : "LONG FORMING";
+      verified
+      ? "BUY / LONG"
+      : "LONG FORMING";
 
     side.className=
-    verified
-    ? "side buy"
-    : "side forming";
-
+      verified
+      ? "side buy"
+      : "side forming";
 
     direction.textContent=
-    "BUY / LONG";
+      "BUY / LONG";
 
     direction.className=
-    "val good";
+      "val good";
 
   }else{
 
     side.textContent=
-    verified
-    ? "SELL / SHORT"
-    : "SHORT FORMING";
+      verified
+      ? "SELL / SHORT"
+      : "SHORT FORMING";
 
     side.className=
-    verified
-    ? "side sell"
-    : "side forming";
-
+      verified
+      ? "side sell"
+      : "side forming";
 
     direction.textContent=
-    "SELL / SHORT";
+      "SELL / SHORT";
 
     direction.className=
-    "val bad";
-
+      "val bad";
   }
 
 
-  /* -------- VALUES -------- */
+  /* PRICE */
 
-  document.getElementById(
-    "entry"
-  ).textContent=
-  verified
-  ? "ENTRY: "+f(s.price)
-  : "Watching setup • Score "+score+"/100";
+  document.getElementById("entry").textContent=
+    verified
+    ? "ENTRY NOW: "+fmt(s.price)
+    : "Watching live setup • "+score+"/100";
 
 
-  document.getElementById(
-    "entryBox"
-  ).textContent=
-  f(s.price);
+  document.getElementById("entryBox").textContent=
+    fmt(s.price);
 
 
-  document.getElementById(
-    "score"
-  ).textContent=
-  score+"/100";
+  /* SCORE */
+
+  document.getElementById("score").textContent=
+    score+"/100";
+
+  document.getElementById("score").className=
+    score>=85
+    ? "val good"
+    : score>=70
+    ? "val yellow"
+    : "val";
 
 
-  document.getElementById(
-    "scorefill"
-  ).style.width=
-  Math.min(
-    100,
-    Math.max(
-      0,
-      score
-    )
-  )+"%";
+  document.getElementById("scorefill").style.width=
+    Math.min(
+      100,
+      Math.max(0,score)
+    )+"%";
 
 
-  document.getElementById(
-    "tp"
-  ).textContent=
-  f(s.tp);
+  /* TP SL */
+
+  document.getElementById("tp").textContent=
+    fmt(s.tp);
+
+  document.getElementById("sl").textContent=
+    fmt(s.sl);
 
 
-  document.getElementById(
-    "sl"
-  ).textContent=
-  f(s.sl);
+  document.getElementById("chartEntry").textContent=
+    fmt(s.price);
+
+  document.getElementById("chartTP").textContent=
+    fmt(s.tp);
+
+  document.getElementById("chartSL").textContent=
+    fmt(s.sl);
 
 
-  /* -------- FLOW -------- */
+  /* FLOW */
 
-  document.getElementById(
-    "flow"
-  ).textContent=
-  Number.isFinite(
-    Number(
-      s.flow_delta
-    )
-  )
-  ? Number(
-      s.flow_delta
-    ).toFixed(2)
-  : "—";
+  const flow=Number(s.flow_delta);
+
+  document.getElementById("flow").textContent=
+    Number.isFinite(flow)
+    ? flow.toFixed(3)
+    : "—";
 
 
-  /* -------- BOOK -------- */
+  /* BOOK */
 
-  document.getElementById(
-    "book"
-  ).textContent=
-  Number.isFinite(
-    Number(
-      s.book_imb
-    )
-  )
-  ? Number(
-      s.book_imb
-    ).toFixed(2)
-  : "—";
+  const book=Number(s.book_imb);
+
+  document.getElementById("book").textContent=
+    Number.isFinite(book)
+    ? book.toFixed(3)
+    : "—";
 
 
-  /* -------- SPREAD -------- */
+  /* SPREAD */
 
-  document.getElementById(
-    "spread"
-  ).textContent=
-  Number.isFinite(
-    Number(
-      s.spread_bps
-    )
-  )
-  ? Number(
-      s.spread_bps
-    ).toFixed(2)
-    +" bps"
-  : "—";
+  const spread=Number(s.spread_bps);
+
+  document.getElementById("spread").textContent=
+    Number.isFinite(spread)
+    ? spread.toFixed(2)+" bps"
+    : "—";
 
 
-  /* -------- OI -------- */
+  /* OI */
 
-  document.getElementById(
-    "oi"
-  ).textContent=
-  Number.isFinite(
-    Number(
-      s.oi_change_pct
-    )
-  )
-  ? Number(
-      s.oi_change_pct
-    ).toFixed(2)
-    +"%"
-  : "—";
+  const oi=Number(s.oi_change_pct);
+
+  document.getElementById("oi").textContent=
+    Number.isFinite(oi)
+    ? oi.toFixed(3)+"%"
+    : "—";
 
 
-  /* -------- CHART LEVELS -------- */
+  /* HARD CONFIRM */
 
-  document.getElementById(
-    "chartEntry"
-  ).textContent=
-  f(s.price);
+  const hc=
+    document.getElementById("hardConfirm");
 
+  if(hard){
 
-  document.getElementById(
-    "chartTP"
-  ).textContent=
-  f(s.tp);
+    hc.textContent="YES ✅";
+    hc.className="good";
 
+  }else{
 
-  document.getElementById(
-    "chartSL"
-  ).textContent=
-  f(s.sl);
+    hc.textContent="NOT YET";
+    hc.className="yellow";
+  }
 
 
-  /* -------- LIVE CHART -------- */
+  /* AUTO CHART */
 
-  loadChart(symbol);
-
+  if(scannerControlsChart && coin){
+    loadChart(coin);
+  }
 }
 
 
-/* ===================================================
-   API REFRESH
-=================================================== */
+/* =========================================================
+   HISTORY
+========================================================= */
 
-async function refresh(){
+function renderHistory(signals){
 
-  try{
+  const box=
+    document.getElementById("history");
 
-    let r=
-    await fetch(
-      "/api/status",
-      {
-        cache:"no-store"
-      }
-    );
+  if(!signals || !signals.length){
 
+    box.innerHTML=
+      '<div class="muted">No verified 85+ signal yet.</div>';
 
-    if(r.status===401){
-
-      location.reload();
-      return;
-
-    }
+    return;
+  }
 
 
-    if(!r.ok){
+  box.innerHTML=
+    signals
+    .slice(0,10)
+    .map(x=>{
 
-      throw new Error(
-        "API status "+
-        r.status
-      );
+      const buy=
+        String(x.signal).toUpperCase()==="BUY";
 
-    }
-
-
-    let d=
-    await r.json();
-
-
-    /* -------- LIVE -------- */
-
-    document.getElementById(
-      "live"
-    ).textContent=
-    d.running
-    ? "● LIVE"
-    : "● OFFLINE";
-
-
-    document.getElementById(
-      "status"
-    ).textContent=
-    d.status ||
-    (
-      d.running
-      ? "SCANNING MARKET"
-      : "SCANNER OFFLINE"
-    );
-
-
-    /* -------- PERFORMANCE -------- */
-
-    let p=
-    d.performance || {};
-
-
-    document.getElementById(
-      "totalTrades"
-    ).textContent=
-    p.total_trades ?? 0;
-
-
-    document.getElementById(
-      "wins"
-    ).textContent=
-    p.wins ?? 0;
-
-
-    document.getElementById(
-      "losses"
-    ).textContent=
-    p.losses ?? 0;
-
-
-    document.getElementById(
-      "openTrades"
-    ).textContent=
-    p.open_trades ?? 0;
-
-
-    document.getElementById(
-      "winRate"
-    ).textContent=
-    Number(
-      p.win_rate || 0
-    ).toFixed(2)+"%";
-
-
-    /* -------- TELEGRAM -------- */
-
-    let tg=
-    document.getElementById(
-      "telegramStatus"
-    );
-
-
-    if(d.telegram){
-
-      tg.innerHTML=
-      '<span class="dot"></span> CONNECTED';
-
-    }else{
-
-      tg.textContent=
-      "OFFLINE";
-
-    }
-
-
-    /* =================================================
-       IMPORTANT:
-       85+ SIGNAL FIRST
-       OTHERWISE BEST CANDIDATE
-    ================================================= */
-
-    if(d.latest_signal){
-
-      showCandidate(
-        d.latest_signal,
-        true
-      );
-
-    }else if(
-      d.best_candidate
-    ){
-
-      showCandidate(
-        d.best_candidate,
-        false
-      );
-
-    }else{
-
-      showWaiting();
-
-    }
-
-
-    /* -------- HISTORY -------- */
-
-    if(
-      d.signals
-      &&
-      d.signals.length
-    ){
-
-      document.getElementById(
-        "history"
-      ).innerHTML=
-
-      d.signals
-      .slice(0,10)
-      .map(x=>{
-
-        let isBuy=
-        String(
-          x.signal
-        ).toUpperCase()==="BUY";
-
-
-        return `
-
+      return `
         <div class="row">
 
           <div>
@@ -1488,95 +1054,185 @@ async function refresh(){
               ${shortTime(x.time_utc)}
             </div>
 
-            <div
-            class="muted"
+            <div class="muted"
             style="margin-top:4px">
 
               Entry:
-              ${f(x.price)}
+              ${fmt(x.price)}
 
             </div>
 
           </div>
 
 
-          <div
-          style="text-align:right">
+          <div style="text-align:right">
 
-            <span
-            class="badge ${
-              isBuy
-              ? "bBuy"
-              : "bSell"
-            }">
+            <span class="badge ${buy ? "bBuy":"bSell"}">
 
-              ${
-                isBuy
-                ? "BUY / LONG"
-                : "SELL / SHORT"
-              }
+              ${buy ? "BUY / LONG":"SELL / SHORT"}
 
             </span>
 
-
-            <div
-            class="muted"
+            <div class="muted"
             style="margin-top:6px">
 
               Score:
-              ${f(x.score,2)}/100
+              ${fmt(x.score,2)}/100
 
             </div>
 
           </div>
 
         </div>
+      `;
 
-        `;
+    })
+    .join("");
+}
 
-      }).join("");
+
+/* =========================================================
+   API REFRESH
+========================================================= */
+
+async function refresh(){
+
+  try{
+
+    const r=
+      await fetch(
+        "/api/status",
+        {
+          cache:"no-store",
+          credentials:"same-origin"
+        }
+      );
+
+
+    if(r.status===401){
+
+      location.reload();
+      return;
+    }
+
+
+    if(!r.ok){
+
+      throw new Error(
+        "API status "+r.status
+      );
+    }
+
+
+    const d=
+      await r.json();
+
+
+    /* SERVER LIVE */
+
+    document.getElementById("live").textContent=
+      d.running
+      ? "● LIVE"
+      : "● OFFLINE";
+
+
+    /* SCAN STATUS */
+
+    document.getElementById("status").textContent=
+      d.status ||
+      (
+        d.running
+        ? "SCANNING MARKET"
+        : "SCANNER OFFLINE"
+      );
+
+
+    /* IMPORTANT:
+       ALWAYS DISPLAY LIVE BEST CANDIDATE
+    */
+
+    if(d.best_candidate){
+
+      showCandidate(
+        d.best_candidate
+      );
 
     }else{
 
-      document.getElementById(
-        "history"
-      ).innerHTML=
-
-      '<div class="muted">No verified 85+ signal yet.</div>';
-
+      showWaiting();
     }
+
+
+    /* PERFORMANCE */
+
+    const p=
+      d.performance || {};
+
+
+    document.getElementById("totalTrades").textContent=
+      p.total_trades ?? 0;
+
+    document.getElementById("wins").textContent=
+      p.wins ?? 0;
+
+    document.getElementById("losses").textContent=
+      p.losses ?? 0;
+
+    document.getElementById("openTrades").textContent=
+      p.open_trades ?? 0;
+
+    document.getElementById("winRate").textContent=
+      Number(
+        p.win_rate || 0
+      ).toFixed(2)+"%";
+
+
+    /* TELEGRAM
+       Backend currently reports credentials configured.
+    */
+
+    const tg=
+      document.getElementById("telegramStatus");
+
+    if(d.telegram){
+
+      tg.innerHTML=
+        '<span class="dot"></span> CONFIGURED';
+
+    }else{
+
+      tg.textContent="OFFLINE";
+    }
+
+
+    /* HISTORY */
+
+    renderHistory(
+      d.signals || []
+    );
 
 
   }catch(e){
 
-    console.log(
-      "Dashboard error:",
+    console.error(
+      "Dashboard refresh error:",
       e
     );
 
+    document.getElementById("live").textContent=
+      "● OFFLINE";
 
-    document.getElementById(
-      "live"
-    ).textContent=
-    "● OFFLINE";
-
-
-    document.getElementById(
-      "status"
-    ).textContent=
-    "CONNECTION ERROR";
-
+    document.getElementById("status").textContent=
+      "DASHBOARD CONNECTION ERROR";
   }
-
 }
 
 
-/* FIRST LOAD */
+/* =========================================================
+   START
+========================================================= */
 
 refresh();
-
-
-/* REFRESH EVERY 5 SEC */
 
 setInterval(
   refresh,
