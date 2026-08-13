@@ -118,6 +118,73 @@
     <div class="card"><div class="sectionTitle purple">📊 SCANNER ACTIVITY</div><div class="metricGrid"><div class="metric"><div class="lab">Progress</div><div class="metricVal" id="progress">—</div></div><div class="metric"><div class="lab">Last Scan</div><div class="metricVal" id="lastScanSec">—</div></div><div class="metric"><div class="lab">Alerts</div><div class="metricVal" id="alerts">0</div></div><div class="metric"><div class="lab">Status</div><div class="metricVal" id="statusText">—</div></div></div></div>
   </div>
 
+
+  <div class="card history">
+    <div class="sectionTitle purple">🎯 SCORE WIN-RATIO ANALYSIS — CLOSED TRADES ONLY</div>
+
+    <div class="perfInner" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
+      <div class="perfTile">
+        <div class="lab">Closed Analysed</div>
+        <div class="perfValue" id="scoreClosedTotal">0</div>
+      </div>
+      <div class="perfTile">
+        <div class="lab">Best Score Range</div>
+        <div class="perfValue good" id="bestScoreBucket">—</div>
+      </div>
+      <div class="perfTile">
+        <div class="lab">Best Exact Score*</div>
+        <div class="perfValue yellow" id="bestExactScore">—</div>
+      </div>
+    </div>
+
+    <div class="watchGrid" style="margin-bottom:0">
+      <div>
+        <div class="sectionTitle yellow">SCORE RANGE PERFORMANCE</div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Score Range</th>
+                <th>Closed</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Win Rate</th>
+              </tr>
+            </thead>
+            <tbody id="scoreBucketTable">
+              <tr><td colspan="5">Waiting for score history...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div class="sectionTitle good">EXACT SCORE PERFORMANCE</div>
+        <div class="tableWrap" style="max-height:250px">
+          <table>
+            <thead>
+              <tr>
+                <th>Score</th>
+                <th>Closed</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Win Rate</th>
+              </tr>
+            </thead>
+            <tbody id="scoreExactTable">
+              <tr><td colspan="5">Waiting for score history...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="muted" style="font-size:9px;margin-top:8px">
+      *Best exact score requires at least 3 closed trades. Best range requires at least 5 closed trades.
+      This section is analysis only and does not change the scanner threshold.
+    </div>
+  </div>
+
   <div class="card history">
     <div class="sectionTitle yellow">💰 DAILY CAPITAL SUMMARY — 20X</div>
     <div class="perfInner" style="grid-template-columns:repeat(6,1fr)">
@@ -204,6 +271,57 @@ function graph(id,rows,longSide){const vals=(rows||[]).map(x=>Number(x.rsi_15m))
 
 function history(rows){rows=rows||[];$("historyTable").innerHTML=rows.length?rows.slice(0,10).map(x=>`<tr><td>${x.time_utc?new Date(x.time_utc).toLocaleString():"—"}</td><td><b>${x.symbol||"—"}</b></td><td class="${String(x.signal).toUpperCase()==="BUY"?"good":"bad"}">${String(x.signal).toUpperCase()==="BUY"?"LONG":"SHORT"}</td><td>${fmt(x.score,0)}</td><td>${fmt(x.price)}</td><td class="good">${fmt(x.tp)}</td><td class="bad">${fmt(x.sl)}</td></tr>`).join(""):`<tr><td colspan="7">No verified 85+ trades yet.</td></tr>`}
 
+
+function scorePerformance(sp){
+  sp=sp||{};
+
+  $("scoreClosedTotal").textContent=Number(sp.closed_total||0);
+
+  const bb=sp.best_bucket||null;
+  $("bestScoreBucket").textContent=bb
+    ? `${bb.range} • ${Number(bb.win_rate||0).toFixed(1)}%`
+    : "NEED MORE DATA";
+
+  const be=sp.best_exact||null;
+  $("bestExactScore").textContent=be
+    ? `${be.score} • ${Number(be.win_rate||0).toFixed(1)}%`
+    : "NEED MORE DATA";
+
+  const buckets=sp.buckets||[];
+  $("scoreBucketTable").innerHTML=buckets.length
+    ? buckets.map(x=>{
+        const wr=Number(x.win_rate||0);
+        const cls=wr>=60?"good":wr<45&&Number(x.closed||0)>0?"bad":"yellow";
+        return `<tr>
+          <td><b>${x.range}</b></td>
+          <td>${Number(x.closed||0)}</td>
+          <td class="good">${Number(x.wins||0)}</td>
+          <td class="bad">${Number(x.losses||0)}</td>
+          <td class="${cls}"><b>${wr.toFixed(2)}%</b></td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="5">No closed score data yet.</td></tr>`;
+
+  const exact=(sp.exact||[]).slice().sort((a,b)=>
+    Number(b.score||0)-Number(a.score||0)
+  );
+
+  $("scoreExactTable").innerHTML=exact.length
+    ? exact.map(x=>{
+        const wr=Number(x.win_rate||0);
+        const n=Number(x.closed||0);
+        const cls=wr>=60?"good":wr<45&&n>0?"bad":"yellow";
+        return `<tr>
+          <td><b>${Number(x.score||0)}</b></td>
+          <td>${n}</td>
+          <td class="good">${Number(x.wins||0)}</td>
+          <td class="bad">${Number(x.losses||0)}</td>
+          <td class="${cls}"><b>${wr.toFixed(2)}%</b></td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="5">No closed score data yet.</td></tr>`;
+}
+
 let liveTimer=null;
 async function refreshLiveMarket(){
   if(!currentBest||!currentBest.symbol)return;
@@ -221,6 +339,7 @@ async function refreshStatus(){
     if(d.next_scan){const ms=new Date(d.next_scan)-new Date();$("nextScan").textContent=ms>0?"In "+Math.floor(ms/60000).toString().padStart(2,"0")+":"+Math.floor((ms%60000)/1000).toString().padStart(2,"0"):"Soon"}
     const old=currentBest&&currentBest.symbol;showBest(d.best_candidate);if(!old||old!==(d.best_candidate&&d.best_candidate.symbol))refreshLiveMarket();
     const w=d.rsi_watchlist||{},L=w.oversold_long||[],S=w.overbought_short||[];table("longTable",L,true);table("shortTable",S,false);graph("longGraph",L,true);graph("shortGraph",S,false);heatmap(L,S);
+    scorePerformance(d.score_performance||{});
     const f=d.forming_performance||{};$("fTotal").textContent=f.total_setups||0;$("fWins").textContent=f.wins||0;$("fLosses").textContent=f.losses||0;$("fOpen").textContent=f.open||0;$("fRate").textContent=Number(f.win_rate||0).toFixed(2)+"%";$("fAvg").textContent=Number(f.avg_score||0).toFixed(1);
     const p=d.performance||{};$("sTotal").textContent=p.total_trades||0;$("sWins").textContent=p.wins||0;$("sLosses").textContent=p.losses||0;$("sOpen").textContent=p.open_trades||0;$("sRate").textContent=Number(p.win_rate||0).toFixed(2)+"%";history(d.signals||[]);
     const c=d.capital_summary||d.daily_capital||d.capital||{};
