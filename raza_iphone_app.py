@@ -1133,6 +1133,137 @@ def forming_performance():
     }
 
 
+
+def score_performance():
+    """
+    Read-only historical score analysis.
+    Combines forming_results (60-84) and trade_results (85+).
+    Only CLOSED WIN/LOSS rows are included.
+    Does NOT change scanner/scoring/TP/SL/signal logic.
+    """
+    rows = []
+
+    for r in forming_rows():
+        x = dict(r)
+        x["_source"] = "FORMING"
+        rows.append(x)
+
+    for r in trade_rows():
+        x = dict(r)
+        x["_source"] = "STRONG"
+        rows.append(x)
+
+    closed = [
+        r for r in rows
+        if str(r.get("status") or "").upper() in ("WIN", "LOSS")
+    ]
+
+    exact_map = {}
+
+    for r in closed:
+        try:
+            sc = int(round(float(r.get("score") or 0)))
+        except Exception:
+            continue
+
+        if sc < 60:
+            continue
+
+        item = exact_map.setdefault(sc, {
+            "score": sc,
+            "closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+        })
+
+        item["closed"] += 1
+        if str(r.get("status") or "").upper() == "WIN":
+            item["wins"] += 1
+        else:
+            item["losses"] += 1
+
+    exact = []
+    for sc in sorted(exact_map):
+        item = exact_map[sc]
+        item["win_rate"] = round(
+            (item["wins"] / item["closed"]) * 100, 2
+        ) if item["closed"] else 0.0
+        exact.append(item)
+
+    ranges = [
+        (60, 64, "60-64"),
+        (65, 69, "65-69"),
+        (70, 74, "70-74"),
+        (75, 79, "75-79"),
+        (80, 84, "80-84"),
+        (85, None, "85+"),
+    ]
+
+    buckets = []
+
+    for low, high, label in ranges:
+        selected = []
+
+        for r in closed:
+            try:
+                sc = float(r.get("score") or 0)
+            except Exception:
+                continue
+
+            if sc < low:
+                continue
+            if high is not None and sc > high:
+                continue
+
+            selected.append(r)
+
+        wins = sum(
+            1 for r in selected
+            if str(r.get("status") or "").upper() == "WIN"
+        )
+        losses = sum(
+            1 for r in selected
+            if str(r.get("status") or "").upper() == "LOSS"
+        )
+        total = wins + losses
+
+        buckets.append({
+            "range": label,
+            "closed": total,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round((wins / total) * 100, 2) if total else 0.0,
+        })
+
+    eligible_exact = [x for x in exact if x["closed"] >= 3]
+    best_exact = (
+        max(
+            eligible_exact,
+            key=lambda x: (x["win_rate"], x["closed"], x["score"])
+        )
+        if eligible_exact else None
+    )
+
+    eligible_buckets = [x for x in buckets if x["closed"] >= 5]
+    best_bucket = (
+        max(
+            eligible_buckets,
+            key=lambda x: (x["win_rate"], x["closed"])
+        )
+        if eligible_buckets else None
+    )
+
+    return {
+        "closed_total": len(closed),
+        "exact": exact,
+        "buckets": buckets,
+        "best_exact": best_exact,
+        "best_bucket": best_bucket,
+        "note": "Historical analysis only. Scanner threshold unchanged.",
+    }
+
+
 def capital_summary():
     """
     Paper-performance capital summary based on BEST FORMING setups (60-84).
@@ -2562,6 +2693,7 @@ def api_status():
     x["min_score"] = MIN_SCORE
     x["performance"] = performance()
     x["forming_performance"] = forming_performance()
+    x["score_performance"] = score_performance()
 
     x["forming_history"] = list(
         reversed(
@@ -2606,6 +2738,9 @@ def api_signal():
     x["performance"] = performance()
     x["forming_performance"] = (
         forming_performance()
+    )
+    x["score_performance"] = (
+        score_performance()
     )
 
     x["forming_history"] = list(
