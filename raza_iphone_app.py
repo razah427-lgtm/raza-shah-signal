@@ -1134,14 +1134,16 @@ def forming_performance():
 
 
 def capital_summary():
-    """20X paper-capital summary based on ALL closed final-signal performance.
-
-    Uses the actual stored entry/exit move for each WIN/LOSS and applies
-    TEST_LEVERAGE. This is a paper simulation; it does not include fees,
-    funding or slippage.
     """
+    Paper-performance capital summary based on BEST FORMING setups (60-84).
+
+    This intentionally uses forming_results rather than 85+ verified trades,
+    because the dashboard's forming performance already contains the larger
+    historical sample. Strong-ready (85+) performance remains separate.
+    """
+
     rows = [
-        r for r in trade_rows()
+        r for r in forming_rows()
         if r.get("status") in ("WIN", "LOSS")
     ]
 
@@ -1150,6 +1152,7 @@ def capital_summary():
 
     for r in rows:
         pl = TEST_START_CAPITAL * _trade_return_pct(r)
+
         if pl >= 0:
             profit += pl
         else:
@@ -1157,31 +1160,39 @@ def capital_summary():
 
     net = profit - loss
     ending = TEST_START_CAPITAL + net
-    wins = sum(1 for r in rows if r.get("status") == "WIN")
-    losses = sum(1 for r in rows if r.get("status") == "LOSS")
-    total = wins + losses
+
+    wins = sum(
+        1 for r in rows
+        if r.get("status") == "WIN"
+    )
+
+    losses = sum(
+        1 for r in rows
+        if r.get("status") == "LOSS"
+    )
 
     return {
         "starting_capital": round(TEST_START_CAPITAL, 2),
         "leverage": TEST_LEVERAGE,
-        # Keep old field names so the current dashboard updates without
-        # requiring an index.html change. They now represent all-time
-        # performance-based paper P/L rather than only today's P/L.
+
+        # Existing frontend field names are preserved so index.html
+        # does not need to be changed.
         "daily_profit": round(profit, 2),
         "daily_loss": round(loss, 2),
         "net_pl": round(net, 2),
         "ending_capital": round(ending, 2),
         "net_pl_pct": (
             round((net / TEST_START_CAPITAL) * 100, 2)
-            if TEST_START_CAPITAL else 0.0
+            if TEST_START_CAPITAL
+            else 0.0
         ),
-        "closed_trades_today": total,
-        "closed_trades": total,
+
+        # Extra metadata for debugging / API inspection.
+        "closed_trades_today": len(rows),
+        "source": "BEST FORMING PERFORMANCE 60-84",
+        "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
-        "win_rate": round((wins / total) * 100, 2) if total else 0.0,
-        "basis": "ALL_TIME_FINAL_SIGNAL_PERFORMANCE",
-        "note": "20X paper simulation; fees, funding and slippage excluded.",
     }
 
 # ============================================================
