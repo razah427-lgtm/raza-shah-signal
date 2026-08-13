@@ -1134,39 +1134,22 @@ def forming_performance():
 
 
 def capital_summary():
+    """20X paper-capital summary based on ALL closed final-signal performance.
+
+    Uses the actual stored entry/exit move for each WIN/LOSS and applies
+    TEST_LEVERAGE. This is a paper simulation; it does not include fees,
+    funding or slippage.
+    """
     rows = [
         r for r in trade_rows()
         if r.get("status") in ("WIN", "LOSS")
     ]
 
-    ksa = timezone(timedelta(hours=3))
-    today_ksa = datetime.now(ksa).date()
-
-    daily = []
-
-    for r in rows:
-        try:
-            dt = datetime.fromisoformat(
-                r.get("closed_time_utc")
-                or r.get("time_utc")
-                or ""
-            )
-
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-
-            if dt.astimezone(ksa).date() == today_ksa:
-                daily.append(r)
-
-        except Exception:
-            pass
-
     profit = 0.0
     loss = 0.0
 
-    for r in daily:
+    for r in rows:
         pl = TEST_START_CAPITAL * _trade_return_pct(r)
-
         if pl >= 0:
             profit += pl
         else:
@@ -1174,20 +1157,31 @@ def capital_summary():
 
     net = profit - loss
     ending = TEST_START_CAPITAL + net
+    wins = sum(1 for r in rows if r.get("status") == "WIN")
+    losses = sum(1 for r in rows if r.get("status") == "LOSS")
+    total = wins + losses
 
     return {
         "starting_capital": round(TEST_START_CAPITAL, 2),
         "leverage": TEST_LEVERAGE,
+        # Keep old field names so the current dashboard updates without
+        # requiring an index.html change. They now represent all-time
+        # performance-based paper P/L rather than only today's P/L.
         "daily_profit": round(profit, 2),
         "daily_loss": round(loss, 2),
         "net_pl": round(net, 2),
         "ending_capital": round(ending, 2),
         "net_pl_pct": (
             round((net / TEST_START_CAPITAL) * 100, 2)
-            if TEST_START_CAPITAL
-            else 0.0
+            if TEST_START_CAPITAL else 0.0
         ),
-        "closed_trades_today": len(daily),
+        "closed_trades_today": total,
+        "closed_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round((wins / total) * 100, 2) if total else 0.0,
+        "basis": "ALL_TIME_FINAL_SIGNAL_PERFORMANCE",
+        "note": "20X paper simulation; fees, funding and slippage excluded.",
     }
 
 # ============================================================
