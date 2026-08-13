@@ -34,7 +34,7 @@ BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "900"))       # 15 minutes
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))       # 5 minutes
 TOP_COINS = int(os.getenv("TOP_COINS", "100"))
 DEEP_CHECK = int(os.getenv("DEEP_CHECK", "25"))
 MIN_SCORE = int(os.getenv("MIN_SCORE", "85"))
