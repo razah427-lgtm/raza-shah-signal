@@ -38,6 +38,7 @@ SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))       # 5 minutes
 TOP_COINS = int(os.getenv("TOP_COINS", "100"))
 DEEP_CHECK = int(os.getenv("DEEP_CHECK", "25"))
 MIN_SCORE = int(os.getenv("MIN_SCORE", "85"))
+# LOCKED SCORE GROUPS: 60-64 = REFINE, 65-84 = IGNORE, 85+ = STRONG
 
 TP_PCT = float(os.getenv("TP_PCT", "0.006"))                 # 0.60%
 SL_PCT = float(os.getenv("SL_PCT", "0.004"))                 # 0.40%
@@ -901,10 +902,41 @@ def forming_rows():
         return []
 
 
+def _score_value(value):
+    """Return numeric score from a row/candidate or raw value."""
+    try:
+        if isinstance(value, dict):
+            value = value.get("score")
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_refine_score(value):
+    """Locked refine band: 60-64 only."""
+    score = _score_value(value)
+    return 60 <= score <= 64
+
+
+def is_strong_score(value):
+    """Locked strong band: 85+ only."""
+    return _score_value(value) >= MIN_SCORE
+
+
+def is_locked_score(value):
+    """Only 60-64 and 85+ are active; 65-84 is ignored."""
+    return is_refine_score(value) or is_strong_score(value)
+
+
+def refine_forming_rows():
+    """Return only 60-64 forming records; keep old 65-84 DB rows untouched."""
+    return [r for r in forming_rows() if is_refine_score(r)]
+
+
 def has_recent_forming(symbol, side):
     now = datetime.now(timezone.utc)
 
-    for r in forming_rows():
+    for r in refine_forming_rows():
         if (
             r.get("symbol") != symbol
             or r.get("signal") != side
@@ -935,7 +967,9 @@ def has_recent_forming(symbol, side):
 def add_forming_setup(candidate):
     score = int(candidate.get("score", 0) or 0)
 
-    if score < 60 or score >= MIN_SCORE:
+    # LOCKED: only score 60-64 is stored as REFINE/FORMING.
+    # Scores 65-84 are intentionally ignored.
+    if not is_refine_score(score):
         return False
 
     symbol = candidate.get("symbol")
@@ -1021,7 +1055,8 @@ def _trade_return_pct(r):
 
 
 def performance():
-    rows = trade_rows()
+    # LOCKED strong performance group: 85+ only.
+    rows = [r for r in trade_rows() if is_strong_score(r)]
 
     closed = [
         r for r in rows
@@ -1071,7 +1106,8 @@ def performance():
 
 
 def forming_performance():
-    rows = forming_rows()
+    # LOCKED performance group: 60-64 only.
+    rows = refine_forming_rows()
 
     closed = [
         r for r in rows
@@ -1137,20 +1173,22 @@ def forming_performance():
 def score_performance():
     """
     Read-only historical score analysis.
-    Combines forming_results (60-84) and trade_results (85+).
+    Locked score analysis: 60-64 REFINE and 85+ STRONG only.
+    Scores 65-84 are ignored.
     Only CLOSED WIN/LOSS rows are included.
-    Does NOT change scanner/scoring/TP/SL/signal logic.
     """
     rows = []
 
-    for r in forming_rows():
+    for r in refine_forming_rows():
         x = dict(r)
-        x["_source"] = "FORMING"
+        x["_source"] = "REFINE_60_64"
         rows.append(x)
 
     for r in trade_rows():
+        if not is_strong_score(r):
+            continue
         x = dict(r)
-        x["_source"] = "STRONG"
+        x["_source"] = "STRONG_85_PLUS"
         rows.append(x)
 
     closed = [
@@ -1166,7 +1204,7 @@ def score_performance():
         except Exception:
             continue
 
-        if sc < 60:
+        if not is_locked_score(sc):
             continue
 
         item = exact_map.setdefault(sc, {
@@ -1192,12 +1230,8 @@ def score_performance():
         exact.append(item)
 
     ranges = [
-        (60, 64, "60-64"),
-        (65, 69, "65-69"),
-        (70, 74, "70-74"),
-        (75, 79, "75-79"),
-        (80, 84, "80-84"),
-        (85, None, "85+"),
+        (60, 64, "60-64 REFINE"),
+        (85, None, "85+ STRONG"),
     ]
 
     buckets = []
@@ -1260,21 +1294,18 @@ def score_performance():
         "buckets": buckets,
         "best_exact": best_exact,
         "best_bucket": best_bucket,
-        "note": "Historical analysis only. Scanner threshold unchanged.",
+        "note": "LOCKED: 60-64 refine and 85+ strong only; 65-84 ignored.",
     }
 
 
 def capital_summary():
     """
-    Paper-performance capital summary based on BEST FORMING setups (60-84).
-
-    This intentionally uses forming_results rather than 85+ verified trades,
-    because the dashboard's forming performance already contains the larger
-    historical sample. Strong-ready (85+) performance remains separate.
+    Paper-performance capital summary for the locked REFINE group (60-64).
+    Scores 65-84 are ignored. Strong-ready (85+) performance remains separate.
     """
 
     rows = [
-        r for r in forming_rows()
+        r for r in refine_forming_rows()
         if r.get("status") in ("WIN", "LOSS")
     ]
 
@@ -1320,7 +1351,7 @@ def capital_summary():
 
         # Extra metadata for debugging / API inspection.
         "closed_trades_today": len(rows),
-        "source": "BEST FORMING PERFORMANCE 60-84",
+        "source": "REFINE PERFORMANCE 60-64",
         "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
@@ -1428,7 +1459,7 @@ def check_forming_setups():
         return
 
     try:
-        rows = forming_rows()
+        rows = refine_forming_rows()
 
         for r in rows:
             if r.get("status") != "OPEN":
@@ -2104,20 +2135,20 @@ def scan_once():
             if not c:
                 continue
 
-            if (
-                best is None
-                or c["score"] > best["score"]
-            ):
-                best = c
+            # LOCKED groups only: 60-64 REFINE or 85+ STRONG.
+            # 65-84 is intentionally ignored.
+            if is_locked_score(c):
+                if (
+                    best is None
+                    or c["score"] > best["score"]
+                ):
+                    best = c
 
-            if (
-                60 <= c["score"]
-                < MIN_SCORE
-            ):
+            if is_refine_score(c):
                 add_forming_setup(c)
 
             if (
-                c["score"] >= MIN_SCORE
+                is_strong_score(c)
                 and c["hard_confirm"]
                 and not has_recent_or_open_trade(
                     c["symbol"],
@@ -2181,7 +2212,7 @@ def scan_once():
 
         else:
             state["status"] = (
-                "Waiting for 85+ setup"
+                "Waiting for 60-64 refine or 85+ setup"
             )
 
         if (
@@ -2697,7 +2728,7 @@ def api_status():
 
     x["forming_history"] = list(
         reversed(
-            forming_rows()[-20:]
+            refine_forming_rows()[-20:]
         )
     )
 
@@ -2705,8 +2736,8 @@ def api_status():
 
     x["dashboard"] = {
         "risk_rules": {
-            "risky": "60-69",
-            "medium": "70-84",
+            "risky": "60-64 REFINE",
+            "medium": "65-84 IGNORED",
             "strong": "85+",
             "trade_ready": (
                 "85+ AND hard confirmation"
@@ -2745,7 +2776,7 @@ def api_signal():
 
     x["forming_history"] = list(
         reversed(
-            forming_rows()[-20:]
+            refine_forming_rows()[-20:]
         )
     )
 
