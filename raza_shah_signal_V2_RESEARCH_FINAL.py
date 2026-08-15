@@ -40,8 +40,8 @@ from flask import (
 # -> PAPER SIGNAL
 # ============================================================
 
-STRATEGY_VERSION = "V2R2_RESEARCH_STABLE"
-BUILD_VERSION = "V3_RSI_REVERSAL_SMART_FINAL"
+STRATEGY_VERSION = "V4_DIRECTION_AUDIT_20260815"
+BUILD_VERSION = "V4_DIRECTION_AUDIT_1"
 REVERSAL_TEST_START_UTC = "2026-08-15T08:37:00+00:00"  # KSA 11:37, new reversal forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
@@ -116,6 +116,15 @@ RSI_EXTREME_OVERSOLD = float(os.getenv("RSI_EXTREME_OVERSOLD", "20"))
 RSI_TURN_MIN = float(os.getenv("RSI_TURN_MIN", "0.50"))
 RSI_EXTREME_LOOKBACK = int(os.getenv("RSI_EXTREME_LOOKBACK", "3"))
 
+# V4 direction-quality controls.
+# Immediate reversal only: the PREVIOUS completed 15m RSI bar must itself be extreme.
+HTF_CONFLICT_FILTER_ENABLED = (
+    os.getenv("HTF_CONFLICT_FILTER_ENABLED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+CHOCH_LOOKBACK_5M = int(os.getenv("CHOCH_LOOKBACK_5M", "3"))
+TRADE_AUDIT_LIMIT = int(os.getenv("TRADE_AUDIT_LIMIT", "50"))
+
 # BTC market regime is CONTEXT ONLY in V2R1.
 # It is recorded and scored, but it never hard-rejects an otherwise valid altcoin setup.
 BTC_FILTER_ENABLED = False
@@ -132,7 +141,13 @@ STRONG_QUALITY_SCORE = int(os.getenv("STRONG_QUALITY_SCORE", "85"))
 
 # Paper tester
 TEST_START_CAPITAL = float(os.getenv("TEST_START_CAPITAL", "100"))
+
+# MAX leverage cap only. Actual leverage is calculated from SL distance.
 TEST_LEVERAGE = float(os.getenv("TEST_LEVERAGE", "20"))
+
+# Fixed capital risk target per trade.
+# Default: an SL hit including estimated fee/slippage aims for ~2% capital loss.
+CAPITAL_RISK_PER_TRADE = float(os.getenv("CAPITAL_RISK_PER_TRADE", "0.02"))
 
 # Cost-aware paper tester. Bitget standard taker fee is commonly 0.06% per side.
 # Slippage is a conservative paper-test assumption and can be overridden in Render env.
@@ -284,6 +299,28 @@ def init_db():
                     ALTER TABLE forming_results
                     ADD COLUMN IF NOT EXISTS strategy_version TEXT
                 """)
+                # V4 trade-audit fields. Safe migrations; old rows remain valid.
+                cur.execute("""
+                    ALTER TABLE trade_results
+                    ADD COLUMN IF NOT EXISTS entry_context_json TEXT
+                """)
+                cur.execute("""
+                    ALTER TABLE trade_results
+                    ADD COLUMN IF NOT EXISTS max_favorable_pct DOUBLE PRECISION
+                """)
+                cur.execute("""
+                    ALTER TABLE trade_results
+                    ADD COLUMN IF NOT EXISTS max_adverse_pct DOUBLE PRECISION
+                """)
+                cur.execute("""
+                    ALTER TABLE trade_results
+                    ADD COLUMN IF NOT EXISTS last_checked_price DOUBLE PRECISION
+                """)
+                cur.execute("""
+                    ALTER TABLE trade_results
+                    ADD COLUMN IF NOT EXISTS exit_reason TEXT
+                """)
+
 
             conn.commit()
 
@@ -304,7 +341,7 @@ state = {
     "build_version": BUILD_VERSION,
     "exchange": "BITGET",
     "data_source": "Bitget USDT-M Futures",
-    "status": "Starting V3...",
+    "status": "Starting V4 Direction Audit...",
     "last_scan": None,
     "next_scan": None,
     "alerts_last_scan": 0,
@@ -858,7 +895,6 @@ def liquidity_setup_15m(symbol, side):
     prior_high = max(x["high"] for x in recent)
     prior_low = min(x["low"] for x in recent)
 
-    # Wider external-liquidity pool used only for smart TP placement.
     external = c[-55:-3]
     external_high = max(x["high"] for x in external)
     external_low = min(x["low"] for x in external)
@@ -868,8 +904,14 @@ def liquidity_setup_15m(symbol, side):
     lower_wick = min(last["open"], last["close"]) - last["low"]
     upper_wick = last["high"] - max(last["open"], last["close"])
 
-    bullish_bar = (last["close"] > last["open"] and close_loc >= 0.55) or (lower_wick >= 0.30 * rng and close_loc >= 0.60)
-    bearish_bar = (last["close"] < last["open"] and close_loc <= 0.45) or (upper_wick >= 0.30 * rng and close_loc <= 0.40)
+    bullish_bar = (
+        (last["close"] > last["open"] and close_loc >= 0.55)
+        or (lower_wick >= 0.30 * rng and close_loc >= 0.60)
+    )
+    bearish_bar = (
+        (last["close"] < last["open"] and close_loc <= 0.45)
+        or (upper_wick >= 0.30 * rng and close_loc <= 0.40)
+    )
 
     if side == "BUY":
         trend_aligned = e20 >= e50 * 0.999 and price >= e20 * 0.997
@@ -885,10 +927,17 @@ def liquidity_setup_15m(symbol, side):
             and last["close"] > prior_high
             and close_loc >= 0.50
         )
+
+        # V4 FIX: a LOW sweep must actually trade BELOW prior_low and reclaim it.
         sweep = (
-            last["low"] <= prior_low * (1 + SWEEP_BUFFER_PCT)
+            last["low"] < prior_low
             and last["close"] > prior_low
             and bullish_bar
+        )
+        sweep_penetration_pct = (
+            ((prior_low - last["low"]) / prior_low)
+            if sweep and prior_low > 0
+            else 0.0
         )
 
         valid = volatility_ok and (pullback or breakout or sweep)
@@ -915,10 +964,17 @@ def liquidity_setup_15m(symbol, side):
             and last["close"] < prior_low
             and close_loc <= 0.50
         )
+
+        # V4 FIX: a HIGH sweep must actually trade ABOVE prior_high and reject it.
         sweep = (
-            last["high"] >= prior_high * (1 - SWEEP_BUFFER_PCT)
+            last["high"] > prior_high
             and last["close"] < prior_high
             and bearish_bar
+        )
+        sweep_penetration_pct = (
+            ((last["high"] - prior_high) / prior_high)
+            if sweep and prior_high > 0
+            else 0.0
         )
 
         valid = volatility_ok and (pullback or breakout or sweep)
@@ -941,6 +997,7 @@ def liquidity_setup_15m(symbol, side):
         "external_low": external_low,
         "liquidity_level": liquidity_level,
         "sweep_extreme": sweep_extreme,
+        "sweep_penetration_pct": sweep_penetration_pct,
         "ema20": e20,
         "ema50": e50,
         "atr": atr15,
@@ -950,42 +1007,51 @@ def liquidity_setup_15m(symbol, side):
         "pullback": bool(pullback),
         "breakout": bool(breakout),
         "sweep": bool(sweep),
+        "close_loc": close_loc,
     }
-
-# ============================================================
-# V2 LAYER 4 — 5M ENTRY TRIGGER
-# ============================================================
 
 def entry_trigger_5m(symbol, side):
     c = candle_dicts(symbol, "5m", 80)
-    if len(c) < 30:
+    if len(c) < max(30, CHOCH_LOOKBACK_5M + 5):
         raise RuntimeError(f"Not enough 5M candles for {symbol}")
 
     closes = [x["close"] for x in c]
     e9 = ema(closes[-40:], 9)
     e21 = ema(closes[-50:], 21)
-    last, prev = c[-1], c[-2]
+    last = c[-1]
+
+    prior = c[-(CHOCH_LOOKBACK_5M + 1):-1]
+    prior_high = max(x["high"] for x in prior)
+    prior_low = min(x["low"] for x in prior)
+
     rng = max(last["high"] - last["low"], 1e-12)
     close_loc = (last["close"] - last["low"]) / rng
 
     if side == "BUY":
-        trend_ok = e9 >= e21 * 0.9995 and last["close"] > e9
-        momentum = last["close"] > prev["high"]
-        reclaim = last["low"] <= e9 * 1.0025 and last["close"] > prev["close"] and close_loc >= 0.55
-        trigger = trend_ok and (momentum or reclaim)
-        name = "BULL_5M_TRIGGER" if trigger else "WAIT"
+        ema_ok = last["close"] > e9 and e9 >= e21 * 0.9995
+        choch = last["close"] > prior_high
+        candle_ok = last["close"] > last["open"] and close_loc >= 0.60
+        trigger = ema_ok and choch and candle_ok
+        name = "BULL_5M_CHOCH" if trigger else "WAIT"
     else:
-        trend_ok = e9 <= e21 * 1.0005 and last["close"] < e9
-        momentum = last["close"] < prev["low"]
-        reclaim = last["high"] >= e9 * 0.9975 and last["close"] < prev["close"] and close_loc <= 0.45
-        trigger = trend_ok and (momentum or reclaim)
-        name = "BEAR_5M_TRIGGER" if trigger else "WAIT"
+        ema_ok = last["close"] < e9 and e9 <= e21 * 1.0005
+        choch = last["close"] < prior_low
+        candle_ok = last["close"] < last["open"] and close_loc <= 0.40
+        trigger = ema_ok and choch and candle_ok
+        name = "BEAR_5M_CHOCH" if trigger else "WAIT"
 
-    return {"valid": bool(trigger), "trigger": name, "ema9": e9, "ema21": e21, "price": last["close"]}
-
-# ============================================================
-# ORDER BOOK
-# ============================================================
+    return {
+        "valid": bool(trigger),
+        "trigger": name,
+        "ema9": e9,
+        "ema21": e21,
+        "price": last["close"],
+        "choch": bool(choch),
+        "choch_lookback": CHOCH_LOOKBACK_5M,
+        "prior_high": prior_high,
+        "prior_low": prior_low,
+        "close_loc": close_loc,
+    }
 
 def raw_order_book(symbol, limit=100):
     data = bitget_get(
@@ -1305,7 +1371,55 @@ def btc_context_points(side, btc_regime):
     return 1
 
 # ============================================================
-# V2 DYNAMIC RISK
+# RISK-MANAGED POSITION SIZING
+# ============================================================
+
+def risk_managed_position(entry, sl):
+    """
+    Keep the market-defined SL where it belongs and adjust position size instead.
+
+    Effective leverage is chosen so that an exact SL hit, including estimated
+    round-trip taker fee + slippage, targets CAPITAL_RISK_PER_TRADE of capital.
+    TEST_LEVERAGE remains only a hard maximum cap.
+    """
+    entry = float(entry or 0)
+    sl = float(sl or 0)
+
+    if entry <= 0 or sl <= 0:
+        return {
+            "stop_pct": 0.0,
+            "effective_leverage": 0.0,
+            "position_notional": 0.0,
+            "planned_capital_risk_pct": 0.0,
+        }
+
+    stop_pct = abs(entry - sl) / entry
+    round_trip_cost = 2.0 * (
+        PAPER_TAKER_FEE_RATE + PAPER_SLIPPAGE_PER_SIDE
+    )
+
+    per_1x_loss = stop_pct + round_trip_cost
+    effective_leverage = (
+        CAPITAL_RISK_PER_TRADE / per_1x_loss
+        if per_1x_loss > 0
+        else 0.0
+    )
+
+    effective_leverage = max(
+        0.0,
+        min(TEST_LEVERAGE, effective_leverage),
+    )
+
+    return {
+        "stop_pct": stop_pct,
+        "effective_leverage": effective_leverage,
+        "position_notional": TEST_START_CAPITAL * effective_leverage,
+        "planned_capital_risk_pct": effective_leverage * per_1x_loss,
+    }
+
+
+# ============================================================
+# SMART-MONEY DYNAMIC RISK
 # ============================================================
 
 def dynamic_risk(entry, side, setup, heat=None, whale=None):
@@ -1482,12 +1596,17 @@ def dynamic_risk(entry, side, setup, heat=None, whale=None):
     if effective_rr < SMART_MIN_RR:
         return None
 
+    sizing = risk_managed_position(entry, sl)
+
     return {
         "risk_pct": risk_pct,
         "risk_dist": risk_dist,
         "sl": sl,
         "tp": tp,
         "rr": effective_rr,
+        "capital_risk_pct": sizing["planned_capital_risk_pct"],
+        "effective_leverage": sizing["effective_leverage"],
+        "position_notional": sizing["position_notional"],
         "target_rr": target_rr,
         "tp_source": tp_source,
         "sl_source": "SMC_STRUCTURE_PLUS_HEAT",
@@ -1642,50 +1761,50 @@ def trade_rows(v2_only=True):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                columns = """
+                    trade_id,
+                    time_utc,
+                    closed_time_utc,
+                    symbol,
+                    signal,
+                    score,
+                    entry,
+                    tp,
+                    sl,
+                    status,
+                    exit_price,
+                    strategy_version,
+                    entry_context_json,
+                    max_favorable_pct,
+                    max_adverse_pct,
+                    last_checked_price,
+                    exit_reason
+                """
+
                 if v2_only:
-                    cur.execute("""
-                        SELECT
-                            trade_id,
-                            time_utc,
-                            closed_time_utc,
-                            symbol,
-                            signal,
-                            score,
-                            entry,
-                            tp,
-                            sl,
-                            status,
-                            exit_price,
-                            strategy_version
+                    cur.execute(
+                        f"""
+                        SELECT {columns}
                         FROM trade_results
                         WHERE strategy_version = %s
                         ORDER BY time_utc ASC
-                    """, (STRATEGY_VERSION,))
+                        """,
+                        (STRATEGY_VERSION,),
+                    )
                 else:
-                    cur.execute("""
-                        SELECT
-                            trade_id,
-                            time_utc,
-                            closed_time_utc,
-                            symbol,
-                            signal,
-                            score,
-                            entry,
-                            tp,
-                            sl,
-                            status,
-                            exit_price,
-                            strategy_version
+                    cur.execute(
+                        f"""
+                        SELECT {columns}
                         FROM trade_results
                         ORDER BY time_utc ASC
-                    """)
+                        """
+                    )
 
                 return [dict(r) for r in cur.fetchall()]
 
     except Exception as e:
         print(f"[DB] TRADE READ ERROR: {e}", flush=True)
         return []
-
 
 def write_trade_rows(rows):
     if not DATABASE_URL:
@@ -1708,11 +1827,17 @@ def write_trade_rows(rows):
                             sl,
                             status,
                             exit_price,
-                            strategy_version
+                            strategy_version,
+                            entry_context_json,
+                            max_favorable_pct,
+                            max_adverse_pct,
+                            last_checked_price,
+                            exit_reason
                         )
                         VALUES (
                             %s,%s,%s,%s,%s,%s,
-                            %s,%s,%s,%s,%s,%s
+                            %s,%s,%s,%s,%s,%s,
+                            %s,%s,%s,%s,%s
                         )
                         ON CONFLICT (trade_id)
                         DO UPDATE SET
@@ -1723,7 +1848,21 @@ def write_trade_rows(rows):
                             sl = EXCLUDED.sl,
                             status = EXCLUDED.status,
                             exit_price = EXCLUDED.exit_price,
-                            strategy_version = EXCLUDED.strategy_version
+                            strategy_version = EXCLUDED.strategy_version,
+                            entry_context_json = COALESCE(
+                                EXCLUDED.entry_context_json,
+                                trade_results.entry_context_json
+                            ),
+                            max_favorable_pct = GREATEST(
+                                COALESCE(trade_results.max_favorable_pct, 0),
+                                COALESCE(EXCLUDED.max_favorable_pct, 0)
+                            ),
+                            max_adverse_pct = GREATEST(
+                                COALESCE(trade_results.max_adverse_pct, 0),
+                                COALESCE(EXCLUDED.max_adverse_pct, 0)
+                            ),
+                            last_checked_price = EXCLUDED.last_checked_price,
+                            exit_reason = EXCLUDED.exit_reason
                     """, (
                         r.get("trade_id"),
                         r.get("time_utc"),
@@ -1741,13 +1880,21 @@ def write_trade_rows(rows):
                             else None
                         ),
                         r.get("strategy_version") or STRATEGY_VERSION,
+                        r.get("entry_context_json"),
+                        float(r.get("max_favorable_pct") or 0),
+                        float(r.get("max_adverse_pct") or 0),
+                        (
+                            float(r.get("last_checked_price"))
+                            if r.get("last_checked_price") not in ("", None)
+                            else None
+                        ),
+                        r.get("exit_reason") or "",
                     ))
 
             conn.commit()
 
     except Exception as e:
         print(f"[DB] TRADE WRITE ERROR: {e}", flush=True)
-
 
 def add_open_trade(row):
     trade_id = (
@@ -1757,6 +1904,40 @@ def add_open_trade(row):
     )
 
     rows = trade_rows(v2_only=True)
+
+    context = {
+        "build_version": BUILD_VERSION,
+        "reversal_reason": row.get("reversal_reason"),
+        "rsi_15m": row.get("rsi_15m"),
+        "rsi_prev": row.get("rsi_prev"),
+        "rsi_peak": row.get("rsi_peak"),
+        "rsi_trough": row.get("rsi_trough"),
+        "rsi_turn_amount": row.get("rsi_turn_amount"),
+        "regime_4h": row.get("regime_4h"),
+        "structure_1h": row.get("structure_1h"),
+        "structure_1h_strength": row.get("structure_1h_strength"),
+        "setup_15m": row.get("setup_15m"),
+        "sweep_penetration_pct": row.get("sweep_penetration_pct"),
+        "trigger_5m": row.get("trigger_5m"),
+        "trigger_choch": row.get("trigger_choch"),
+        "flow_delta": row.get("flow_delta"),
+        "book_imb": row.get("book_imb"),
+        "whale_delta": row.get("whale_delta"),
+        "oi_change_pct": row.get("oi_change_pct"),
+        "spread_bps": row.get("spread_bps"),
+        "vol_ratio": row.get("vol_ratio"),
+        "atr_15m_pct": row.get("atr_15m_pct"),
+        "risk_pct": row.get("risk_pct"),
+        "capital_risk_pct": row.get("capital_risk_pct"),
+        "effective_leverage": row.get("effective_leverage"),
+        "rr": row.get("rr"),
+        "tp_source": row.get("tp_source"),
+        "sl_source": row.get("sl_source"),
+        "bid_wall_price": row.get("bid_wall_price"),
+        "ask_wall_price": row.get("ask_wall_price"),
+        "bid_wall_ratio": row.get("bid_wall_ratio"),
+        "ask_wall_ratio": row.get("ask_wall_ratio"),
+    }
 
     rows.append({
         "trade_id": trade_id,
@@ -1771,22 +1952,28 @@ def add_open_trade(row):
         "status": "OPEN",
         "exit_price": "",
         "strategy_version": STRATEGY_VERSION,
+        "entry_context_json": json.dumps(
+            context,
+            ensure_ascii=False,
+            default=str,
+        ),
+        "max_favorable_pct": 0.0,
+        "max_adverse_pct": 0.0,
+        "last_checked_price": row["price"],
+        "exit_reason": "",
     })
 
     write_trade_rows(rows)
     return trade_id
 
-# ============================================================
-# PERFORMANCE / CAPITAL — V2 ONLY
-# ============================================================
-
 def _trade_return_pct(r):
     try:
         entry = float(r.get("entry") or 0)
         exit_price = float(r.get("exit_price") or 0)
+        sl = float(r.get("sl") or 0)
         side = str(r.get("signal") or "").upper()
 
-        if entry <= 0 or exit_price <= 0:
+        if entry <= 0 or exit_price <= 0 or sl <= 0:
             return 0.0
 
         raw = (
@@ -1795,9 +1982,18 @@ def _trade_return_pct(r):
             else (entry - exit_price) / entry
         )
 
-        # Round-trip taker fees + conservative slippage, charged on leveraged notional.
-        round_trip_cost = 2.0 * (PAPER_TAKER_FEE_RATE + PAPER_SLIPPAGE_PER_SIDE)
-        return (raw - round_trip_cost) * TEST_LEVERAGE
+        sizing = risk_managed_position(entry, sl)
+        effective_leverage = float(
+            sizing.get("effective_leverage") or 0
+        )
+
+        round_trip_cost = 2.0 * (
+            PAPER_TAKER_FEE_RATE + PAPER_SLIPPAGE_PER_SIDE
+        )
+
+        # Capital return after cost using dynamic position size.
+        # Exact planned SL ~= CAPITAL_RISK_PER_TRADE loss target.
+        return (raw - round_trip_cost) * effective_leverage
 
     except Exception:
         return 0.0
@@ -1967,6 +2163,8 @@ def capital_summary():
         "strategy_version": STRATEGY_VERSION,
         "starting_capital": round(TEST_START_CAPITAL, 2),
         "leverage": TEST_LEVERAGE,
+        "leverage_mode": "MAX_CAP_DYNAMIC_POSITION_SIZE",
+        "capital_risk_per_trade_pct": round(CAPITAL_RISK_PER_TRADE * 100, 2),
         "daily_profit": round(profit, 2),
         "daily_loss": round(loss, 2),
         "net_pl": round(net, 2),
@@ -1977,20 +2175,102 @@ def capital_summary():
             else 0.0
         ),
         "closed_trades_today": len(rows),
-        "source": "V2R1 VALIDATED TRADES ONLY",
+        "source": "V3 RSI REVERSAL — FIXED CAPITAL RISK POSITION SIZING",
         "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
     }
+
+def _parse_entry_context(row):
+    raw = row.get("entry_context_json")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except Exception:
+        return {}
+
+
+def diagnose_trade_exit(row, result):
+    ctx = _parse_entry_context(row)
+    reasons = []
+
+    risk_pct = float(ctx.get("risk_pct") or 0) * 100.0
+    mfe = float(row.get("max_favorable_pct") or 0)
+    mae = float(row.get("max_adverse_pct") or 0)
+
+    flow = float(ctx.get("flow_delta") or 0)
+    book = float(ctx.get("book_imb") or 0)
+    whale = float(ctx.get("whale_delta") or 0)
+    side = str(row.get("signal") or "")
+
+    flow_dir = flow if side == "BUY" else -flow
+    book_dir = book if side == "BUY" else -book
+    whale_dir = whale if side == "BUY" else -whale
+
+    if result == "LOSS":
+        if risk_pct > 0 and mfe < risk_pct * 0.25:
+            reasons.append("STRAIGHT_TO_SL")
+        elif risk_pct > 0 and mfe >= risk_pct * 0.75:
+            reasons.append("PROFIT_THEN_REVERSED")
+
+        if flow_dir < 0.15:
+            reasons.append("WEAK_ENTRY_FLOW")
+        if book_dir < 0.15:
+            reasons.append("WEAK_ENTRY_BOOK")
+        if whale_dir < 0.25:
+            reasons.append("NO_STRONG_WHALE_CONFIRM")
+
+        reg = str(ctx.get("regime_4h") or "")
+        st = str(ctx.get("structure_1h") or "")
+        if side == "SELL" and reg == "BULL":
+            reasons.append("SELL_AGAINST_4H_BULL")
+        elif side == "BUY" and reg == "BEAR":
+            reasons.append("BUY_AGAINST_4H_BEAR")
+
+        if side == "SELL" and st == "BULL_MOMENTUM":
+            reasons.append("SELL_AGAINST_1H_BULL")
+        elif side == "BUY" and st == "BEAR_MOMENTUM":
+            reasons.append("BUY_AGAINST_1H_BEAR")
+
+    if not reasons:
+        reasons.append("NORMAL_TRADE_PATH")
+
+    return {
+        "reasons": reasons,
+        "mfe_pct": round(mfe, 4),
+        "mae_pct": round(mae, 4),
+        "risk_pct": round(risk_pct, 4),
+    }
+
+
+def recent_trade_audit(limit=TRADE_AUDIT_LIMIT):
+    rows = trade_rows(v2_only=True)
+    out = []
+
+    for r in rows[-max(1, int(limit)):]:
+        item = dict(r)
+        item["entry_context"] = _parse_entry_context(r)
+        item["diagnosis"] = diagnose_trade_exit(
+            r,
+            str(r.get("status") or "OPEN"),
+        )
+        item.pop("entry_context_json", None)
+        out.append(item)
+
+    return list(reversed(out))
+
 
 # ============================================================
 # TP / SL CHECKS
 # ============================================================
 
 def check_open_trades():
-    rows = trade_rows(v2_only=True)
+    # Monitor all open paper trades so older strategy versions can finish.
+    # Current dashboard/performance remains filtered to STRATEGY_VERSION.
+    rows = trade_rows(v2_only=False)
 
-    changed = False
+    dirty = False
     closed_messages = []
 
     for r in rows:
@@ -2006,31 +2286,66 @@ def check_open_trades():
             sl = float(r["sl"])
 
             px = current_price(symbol)
+            r["last_checked_price"] = px
+
+            if side == "BUY":
+                favorable_pct = max(0.0, ((px - entry) / entry) * 100.0)
+                adverse_pct = max(0.0, ((entry - px) / entry) * 100.0)
+            else:
+                favorable_pct = max(0.0, ((entry - px) / entry) * 100.0)
+                adverse_pct = max(0.0, ((px - entry) / entry) * 100.0)
+
+            old_mfe = float(r.get("max_favorable_pct") or 0)
+            old_mae = float(r.get("max_adverse_pct") or 0)
+
+            if favorable_pct > old_mfe:
+                r["max_favorable_pct"] = favorable_pct
+                dirty = True
+
+            if adverse_pct > old_mae:
+                r["max_adverse_pct"] = adverse_pct
+                dirty = True
+
             result = None
+            exit_reason = ""
 
             if side == "BUY":
                 if px >= tp:
                     result = "WIN"
+                    exit_reason = "TP_HIT"
                 elif px <= sl:
                     result = "LOSS"
-
+                    exit_reason = "SL_HIT"
             else:
                 if px <= tp:
                     result = "WIN"
+                    exit_reason = "TP_HIT"
                 elif px >= sl:
                     result = "LOSS"
+                    exit_reason = "SL_HIT"
 
             if result:
                 r["status"] = result
                 r["exit_price"] = px
+                r["exit_reason"] = exit_reason
                 r["closed_time_utc"] = (
                     datetime.now(timezone.utc).isoformat()
                 )
 
-                changed = True
+                dirty = True
+                diagnosis = diagnose_trade_exit(r, result)
 
                 closed_messages.append(
-                    (symbol, side, result, entry, tp, sl, px)
+                    (
+                        symbol,
+                        side,
+                        result,
+                        entry,
+                        tp,
+                        sl,
+                        px,
+                        diagnosis,
+                    )
                 )
 
         except Exception as e:
@@ -2038,9 +2353,10 @@ def check_open_trades():
                 f"OPEN TRADE CHECK ERROR {r.get('symbol')}: {e}"
             )
 
-    if changed:
+    if dirty:
         write_trade_rows(rows)
 
+    if closed_messages:
         p = performance()
 
         for (
@@ -2051,20 +2367,25 @@ def check_open_trades():
             tp,
             sl,
             px,
+            diagnosis,
         ) in closed_messages:
 
             icon = "✅" if result == "WIN" else "❌"
             label = "TP HIT / WIN" if result == "WIN" else "SL HIT / LOSS"
+            reason_text = ", ".join(diagnosis["reasons"])
 
             telegram_async(
-                f"{icon} V2 {label} — {symbol}\n"
+                f"{icon} V4 {label} — {symbol}\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Side: {side}\n"
                 f"Entry: {entry:.8g}\n"
                 f"Exit: {px:.8g}\n"
                 f"TP: {tp:.8g}\n"
-                f"SL: {sl:.8g}\n\n"
-                f"📊 V2 PERFORMANCE\n"
+                f"SL: {sl:.8g}\n"
+                f"MFE: {diagnosis['mfe_pct']:.3f}%\n"
+                f"MAE: {diagnosis['mae_pct']:.3f}%\n"
+                f"Diagnosis: {reason_text}\n\n"
+                f"📊 V4 DIRECTION AUDIT\n"
                 f"Trades: {p['total_trades']}\n"
                 f"Wins: {p['wins']}\n"
                 f"Losses: {p['losses']}\n"
@@ -2072,7 +2393,6 @@ def check_open_trades():
                 f"Net P/L: ${p['net_pl']:.2f}\n"
                 f"🔗 {APP_URL}"
             )
-
 
 def check_forming_setups():
     # Intentionally disabled in V2.
@@ -2164,10 +2484,15 @@ def has_recent_or_open_trade(symbol, side):
 
 def reversal_rsi_context(symbol):
     """
-    Direction is defined by 15m RSI exhaustion, not by 4H trend.
-    SELL: a recent RSI overbought extreme is turning down.
-    BUY:  a recent RSI oversold extreme is turning up.
-    4H/1H are retained as context only.
+    V4 immediate RSI exhaustion turn.
+
+    SELL only when the PREVIOUS completed 15m RSI bar was overbought and
+    the newest completed bar is turning down.
+    BUY only when the PREVIOUS completed 15m RSI bar was oversold and
+    the newest completed bar is turning up.
+
+    We still record the 3-bar peak/trough for scoring/diagnostics, but a
+    two-bars-old extreme can no longer create a late reversal entry by itself.
     """
     c15 = candle_dicts(symbol, "15m", 80)
     if len(c15) < 35:
@@ -2181,18 +2506,21 @@ def reversal_rsi_context(symbol):
     recent = [r_now, r_prev, r_prev2][:max(1, RSI_EXTREME_LOOKBACK)]
     peak = max(recent)
     trough = min(recent)
-    turn_down = (r_prev - r_now) >= RSI_TURN_MIN
-    turn_up = (r_now - r_prev) >= RSI_TURN_MIN
+
+    turn_down_amount = r_prev - r_now
+    turn_up_amount = r_now - r_prev
+    turn_down = turn_down_amount >= RSI_TURN_MIN
+    turn_up = turn_up_amount >= RSI_TURN_MIN
 
     side = None
-    reason = "RSI_NOT_EXTREME"
+    reason = "RSI_NOT_IMMEDIATE_EXTREME"
 
-    if peak >= RSI_OVERBOUGHT and turn_down:
+    if r_prev >= RSI_OVERBOUGHT and turn_down:
         side = "SELL"
-        reason = "OVERBOUGHT_TURN_DOWN"
-    elif trough <= RSI_OVERSOLD and turn_up:
+        reason = "PREV_OVERBOUGHT_TURN_DOWN"
+    elif r_prev <= RSI_OVERSOLD and turn_up:
         side = "BUY"
-        reason = "OVERSOLD_TURN_UP"
+        reason = "PREV_OVERSOLD_TURN_UP"
 
     return {
         "side": side,
@@ -2204,8 +2532,14 @@ def reversal_rsi_context(symbol):
         "rsi_trough": round(trough, 2),
         "turn_down": bool(turn_down),
         "turn_up": bool(turn_up),
+        "turn_amount": round(
+            turn_down_amount if side == "SELL"
+            else turn_up_amount if side == "BUY"
+            else max(turn_down_amount, turn_up_amount),
+            2,
+        ),
+        "extreme_age_bars": 1 if side in ("BUY", "SELL") else None,
     }
-
 
 def reversal_quality_score(side, rctx, setup, trigger, delta, book, spread, oi, whale=None):
     """0-100 score designed for the RSI reversal model.
@@ -2383,6 +2717,35 @@ def _deep_scan_one(item):
         except Exception as e:
             st = {"structure": "RANGE", "error": str(e)}
 
+        # V4: RSI defines the reversal candidate, but strong HTF trend can veto
+        # a dangerous counter-trend entry.
+        htf_conflict = (
+            (
+                side == "SELL"
+                and reg.get("regime") == "BULL"
+                and st.get("structure") == "BULL_MOMENTUM"
+            )
+            or
+            (
+                side == "BUY"
+                and reg.get("regime") == "BEAR"
+                and st.get("structure") == "BEAR_MOMENTUM"
+            )
+        )
+
+        if HTF_CONFLICT_FILTER_ENABLED and htf_conflict:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "HTF_TREND_CONFLICT",
+                "score": 0,
+                "lm": lm,
+                "rsi": rctx,
+                "regime": reg,
+                "structure": st,
+                "error": None,
+            }
+
         # Reversal must occur at a 15m liquidity sweep/reclaim/rejection.
         setup = liquidity_setup_15m(symbol, side)
         if not setup.get("valid") or not setup.get("sweep"):
@@ -2501,9 +2864,14 @@ def _deep_scan_one(item):
             "setup_15m": setup.get("setup", "NONE"),
             "trigger_5m": trigger.get("trigger", "WAIT"),
             "rsi_15m": rctx.get("rsi_now"),
+            "rsi_prev": rctx.get("rsi_prev"),
             "rsi_peak": rctx.get("rsi_peak"),
             "rsi_trough": rctx.get("rsi_trough"),
+            "rsi_turn_amount": rctx.get("turn_amount"),
             "reversal_reason": rctx.get("reason"),
+            "structure_1h_strength": st.get("strength"),
+            "sweep_penetration_pct": setup.get("sweep_penetration_pct", 0.0),
+            "trigger_choch": trigger.get("choch", False),
 
             "flow_delta": delta,
             "buy_usd_60s": buy,
@@ -2516,6 +2884,18 @@ def _deep_scan_one(item):
             "vol_ratio": setup["vol_ratio"],
 
             "risk_pct": risk["risk_pct"],
+            "capital_risk_pct": risk.get(
+                "capital_risk_pct",
+                CAPITAL_RISK_PER_TRADE,
+            ),
+            "effective_leverage": risk.get(
+                "effective_leverage",
+                0.0,
+            ),
+            "position_notional": risk.get(
+                "position_notional",
+                0.0,
+            ),
             "rr": risk["rr"],
             "tp": risk["tp"],
             "sl": risk["sl"],
@@ -2568,11 +2948,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V3 RSI REVERSAL SMART SCAN START")
+    scan_log("RAZA V4 DIRECTION AUDIT SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V3 reversal scanning Top {TOP_COINS} Bitget Futures..."
+            f"V4 direction-audit scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -2741,7 +3121,7 @@ def scan_once():
     ]
 
     scan_log(
-        f"V3 DEEP SCAN START: {len(deep_items)} candidates"
+        f"V4 DEEP SCAN START: {len(deep_items)} candidates"
     )
 
     alerts = 0
@@ -2810,7 +3190,7 @@ def scan_once():
                 p = performance()
 
                 telegram_async(
-                    f"🚨 RAZA SHAH SIGNAL V3 — TRADE READY\n\n"
+                    f"🚨 RAZA SHAH SIGNAL V4 — TRADE READY\n\n"
                     f"Exchange: BITGET FUTURES\n"
                     f"Coin: {c['symbol']}\n"
                     f"Side: "
@@ -2823,15 +3203,22 @@ def scan_once():
                     f"Entry: {c['price']:.8g}\n"
                     f"TP: {c['tp']:.8g}\n"
                     f"SL: {c['sl']:.8g}\n"
-                    f"Risk: {c['risk_pct']*100:.3f}%\n"
+                    f"SL Distance: {c['risk_pct']*100:.3f}%\n"
+                    f"Capital Risk: "
+                    f"{c.get('capital_risk_pct', CAPITAL_RISK_PER_TRADE)*100:.2f}%\n"
+                    f"Effective Leverage: "
+                    f"{c.get('effective_leverage', 0):.2f}x "
+                    f"(max {TEST_LEVERAGE:.0f}x)\n"
+                    f"Paper Notional: "
+                    f"${c.get('position_notional', 0):.2f}\n"
                     f"R:R: 1:{c['rr']:.2f}\n\n"
                     f"Flow: {c['flow_delta']:+.3f}\n"
                     f"Book: {c['book_imb']:+.3f}\n"
                     f"Spread: {c['spread_bps']:.2f} bps\n"
                     f"OI Change: {c['oi_change_pct']:+.3f}%\n"
                     f"15M Volume: {c['vol_ratio']:.2f}x\n\n"
-                    f"V2 Closed: {p['total_trades']}\n"
-                    f"V2 Win Rate: {p['win_rate']:.2f}%\n"
+                    f"Closed: {p['total_trades']}\n"
+                    f"Win Rate: {p['win_rate']:.2f}%\n"
                     f"🔗 {APP_URL}"
                 )
 
@@ -2849,12 +3236,12 @@ def scan_once():
 
         if alerts:
             state["status"] = (
-                f"V3: {alerts} fully validated trade ready"
+                f"V4: {alerts} fully validated trade ready"
             )
 
         elif best:
             state["status"] = (
-                f"V3 best: {best['symbol']} "
+                f"V4 best: {best['symbol']} "
                 f"{'LONG' if best['signal']=='BUY' else 'SHORT'} "
                 f"{best['score']}/100 — {best['status']}"
             )
@@ -2870,7 +3257,7 @@ def scan_once():
             )
 
             state["status"] = (
-                f"V3 waiting — main block: {top_block}"
+                f"V4 waiting — main block: {top_block}"
             )
 
         if (
@@ -2884,7 +3271,7 @@ def scan_once():
     save_state_snapshot()
 
     scan_log(
-        f"V3 SCAN COMPLETE in {elapsed}s "
+        f"V4 SCAN COMPLETE in {elapsed}s "
         f"| alerts={alerts} "
         f"| best={best['symbol'] if best else 'NONE'} "
         f"| blocked={blocked_counts}"
@@ -3096,7 +3483,7 @@ def telegram_hourly_status_loop():
                 best_line = "Best: none"
 
             telegram_async(
-                f"🟢 RAZA SHAH SIGNAL V2\n"
+                f"🟢 RAZA SHAH SIGNAL V4\n"
                 f"1 HOUR STATUS\n\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
@@ -3151,8 +3538,8 @@ def scanner_loop():
     telegram_async(
         f"🟢 RAZA SHAH SIGNAL V2\n"
         f"LIVE PAPER TEST ACTIVE\n\n"
-        f"Logic: 4H → 1H → 15M Liquidity → "
-        f"5M Trigger → Flow/Book/OI\n"
+        f"Logic: RSI Extreme → 15M Liquidity Sweep → "
+        f"5M Reversal → Flow/Book/OI\n"
         f"Exchange: BITGET FUTURES\n"
         f"Top Coins: {TOP_COINS}\n"
         f"Deep Scan: {DEEP_CHECK}\n"
@@ -3162,9 +3549,12 @@ def scanner_loop():
         f"({'ON' if SESSION_FILTER_ENABLED else 'OFF'})\n"
         f"BTC: CONTEXT ONLY (no hard block)\n"
         f"Dynamic R:R: 1:{RR_TARGET:.2f}\n"
-        f"Paper Tester: "
-        f"${TEST_START_CAPITAL:.0f} @ {TEST_LEVERAGE:.0f}x\n\n"
-        f"V2 history: {p['total_trades']} trades\n"
+        f"Paper Tester: ${TEST_START_CAPITAL:.0f}\n"
+        f"Capital Risk/Trade: "
+        f"{CAPITAL_RISK_PER_TRADE*100:.2f}%\n"
+        f"Max Leverage Cap: {TEST_LEVERAGE:.0f}x\n\n"
+        f"Current-strategy history: "
+        f"{p['total_trades']} trades\n"
         f"Winning: {p['win_rate']:.2f}%\n\n"
         f"Trade score gate: {MIN_TRADE_SCORE}+ after market confirmation.\n"
         f"🔗 {APP_URL}"
@@ -3332,16 +3722,20 @@ def api_status():
     x["score_performance"] = score_performance()
     x["forming_history"] = []
     x["capital_summary"] = capital_summary()
+    x["trade_audit"] = recent_trade_audit(20)
+    x["active_build_marker"] = f"{STRATEGY_VERSION} | {BUILD_VERSION}"
 
     x["dashboard"] = {
         "strategy_version": STRATEGY_VERSION,
         "build_version": BUILD_VERSION,
         "logic": (
-            "4H regime → 1H structure → 15m liquidity "
-            "→ 5m trigger → live flow/book/OI → dynamic risk"
+            "15m immediate RSI extreme turn → true liquidity sweep → "
+            "HTF conflict veto → 5m CHoCH → live flow/book/OI → smart risk"
         ),
         "risk_rules": {
             "score_role": "QUALITY ONLY",
+            "direction_audit": "ON",
+            "htf_conflict_filter": HTF_CONFLICT_FILTER_ENABLED,
             "trade_ready": (
                 f"All V2R1 hard filters must pass and score must be >= {MIN_TRADE_SCORE}. "
                 "Score alone cannot create a trade."
@@ -3363,6 +3757,18 @@ def api_status():
     }
 
     return jsonify(x)
+
+
+@app.route("/api/trade-audit")
+def api_trade_audit():
+    if not is_authorized():
+        return jsonify({"error": "unauthorized"}), 401
+
+    return jsonify({
+        "strategy_version": STRATEGY_VERSION,
+        "build_version": BUILD_VERSION,
+        "items": recent_trade_audit(TRADE_AUDIT_LIMIT),
+    })
 
 
 @app.route("/api/signal")
