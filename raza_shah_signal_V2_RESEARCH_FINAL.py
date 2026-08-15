@@ -40,8 +40,8 @@ from flask import (
 # -> PAPER SIGNAL
 # ============================================================
 
-STRATEGY_VERSION = "V4_DIRECTION_AUDIT_20260815"
-BUILD_VERSION = "V4_DIRECTION_AUDIT_LOGGING_2"
+STRATEGY_VERSION = "V5_REVERSAL_ACTIVE_MANAGER_20260815"
+BUILD_VERSION = "V5_SELECTION_ACTIVE_TPSL_1"
 REVERSAL_TEST_START_UTC = "2026-08-15T08:37:00+00:00"  # KSA 11:37, new reversal forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
@@ -113,7 +113,7 @@ RSI_STRONG_OVERBOUGHT = float(os.getenv("RSI_STRONG_OVERBOUGHT", "75"))
 RSI_STRONG_OVERSOLD = float(os.getenv("RSI_STRONG_OVERSOLD", "25"))
 RSI_EXTREME_OVERBOUGHT = float(os.getenv("RSI_EXTREME_OVERBOUGHT", "80"))
 RSI_EXTREME_OVERSOLD = float(os.getenv("RSI_EXTREME_OVERSOLD", "20"))
-RSI_TURN_MIN = float(os.getenv("RSI_TURN_MIN", "0.50"))
+RSI_TURN_MIN = float(os.getenv("RSI_TURN_MIN", "1.00"))
 RSI_EXTREME_LOOKBACK = int(os.getenv("RSI_EXTREME_LOOKBACK", "3"))
 
 # V4 direction-quality controls.
@@ -124,6 +124,46 @@ HTF_CONFLICT_FILTER_ENABLED = (
 )
 CHOCH_LOOKBACK_5M = int(os.getenv("CHOCH_LOOKBACK_5M", "3"))
 TRADE_AUDIT_LIMIT = int(os.getenv("TRADE_AUDIT_LIMIT", "50"))
+
+# V5 selection quality:
+# Require RSI to actually reclaim back inside the normal zone after an extreme,
+# and require BOTH live flow + order-book pressure to agree with the trade.
+RSI_RECLAIM_REQUIRED = (
+    os.getenv("RSI_RECLAIM_REQUIRED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+ENTRY_FLOW_MIN = float(os.getenv("ENTRY_FLOW_MIN", "0.12"))
+ENTRY_BOOK_MIN = float(os.getenv("ENTRY_BOOK_MIN", "0.12"))
+ENTRY_WHALE_HOSTILE_FLOOR = float(os.getenv("ENTRY_WHALE_HOSTILE_FLOOR", "-0.10"))
+
+# Net reward model after estimated round-trip fee/slippage.
+NET_RR_TARGET = float(os.getenv("NET_RR_TARGET", "1.80"))
+NET_RR_STRONG = float(os.getenv("NET_RR_STRONG", "2.20"))
+NET_RR_MIN = float(os.getenv("NET_RR_MIN", "1.50"))
+
+# V5 active trade manager.
+# It NEVER widens risk after entry. SL can only tighten.
+ACTIVE_MANAGER_ENABLED = (
+    os.getenv("ACTIVE_MANAGER_ENABLED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+ACTIVE_BE_TRIGGER_R = float(os.getenv("ACTIVE_BE_TRIGGER_R", "0.65"))
+ACTIVE_LOCK_TRIGGER_R = float(os.getenv("ACTIVE_LOCK_TRIGGER_R", "1.00"))
+ACTIVE_LOCK_R = float(os.getenv("ACTIVE_LOCK_R", "0.35"))
+ACTIVE_TRAIL_TRIGGER_R = float(os.getenv("ACTIVE_TRAIL_TRIGGER_R", "1.40"))
+ACTIVE_TRAIL_GAP_R = float(os.getenv("ACTIVE_TRAIL_GAP_R", "0.45"))
+
+# If live microstructure flips hard against the open position, V5 can exit early
+# instead of waiting for the full structural SL.
+ACTIVE_REVERSAL_FLOW = float(os.getenv("ACTIVE_REVERSAL_FLOW", "0.12"))
+ACTIVE_REVERSAL_BOOK = float(os.getenv("ACTIVE_REVERSAL_BOOK", "0.12"))
+ACTIVE_EARLY_EXIT_ADVERSE_R = float(os.getenv("ACTIVE_EARLY_EXIT_ADVERSE_R", "0.30"))
+ACTIVE_EARLY_EXIT_FAVORABLE_R = float(os.getenv("ACTIVE_EARLY_EXIT_FAVORABLE_R", "0.25"))
+
+# When momentum weakens but has not fully reversed, bring TP closer while
+# preserving a positive locked trade path.
+ACTIVE_TP_CONTRACT_TRIGGER_R = float(os.getenv("ACTIVE_TP_CONTRACT_TRIGGER_R", "0.60"))
+ACTIVE_TP_AHEAD_R = float(os.getenv("ACTIVE_TP_AHEAD_R", "0.20"))
 
 # BTC market regime is CONTEXT ONLY in V2R1.
 # It is recorded and scored, but it never hard-rejects an otherwise valid altcoin setup.
@@ -172,7 +212,7 @@ TELEGRAM_CHAT_ID = (
 
 APP_URL = os.getenv(
     "APP_URL",
-    "https://raza-shah-signal.onrender.com"
+    "https://raza-shah-signal-2.onrender.com"
 ).rstrip("/")
 
 APP_SECRET_KEY = os.getenv(
@@ -341,7 +381,7 @@ state = {
     "build_version": BUILD_VERSION,
     "exchange": "BITGET",
     "data_source": "Bitget USDT-M Futures",
-    "status": "Starting V4 Direction Audit...",
+    "status": "Starting V5 Active Manager...",
     "last_scan": None,
     "next_scan": None,
     "alerts_last_scan": 0,
@@ -1418,8 +1458,30 @@ def risk_managed_position(entry, sl):
     }
 
 
+def _round_trip_cost_pct():
+    return 2.0 * (
+        PAPER_TAKER_FEE_RATE + PAPER_SLIPPAGE_PER_SIDE
+    )
+
+
+def _required_tp_move_pct(stop_pct, desired_net_rr):
+    """
+    Gross price move required so the expected NET reward/risk after estimated
+    round-trip fee + slippage is desired_net_rr.
+    """
+    cost = _round_trip_cost_pct()
+    return (desired_net_rr * (stop_pct + cost)) + cost
+
+
+def _net_rr_from_move(move_pct, stop_pct):
+    cost = _round_trip_cost_pct()
+    net_reward = max(0.0, float(move_pct) - cost)
+    net_risk = max(1e-12, float(stop_pct) + cost)
+    return net_reward / net_risk
+
+
 # ============================================================
-# SMART-MONEY DYNAMIC RISK
+# SMART-MONEY DYNAMIC RISK — V5 NET-RR AWARE
 # ============================================================
 
 def dynamic_risk(entry, side, setup, heat=None, whale=None):
@@ -1517,7 +1579,7 @@ def dynamic_risk(entry, side, setup, heat=None, whale=None):
         sl = entry + risk_dist
 
     # ----------------------------
-    # WHALE / HEAT ADAPTIVE RR
+    # NET REWARD / RISK TARGET
     # ----------------------------
     book_dir = float(heat.get("book_imb") or 0)
     whale_dir = float(whale.get("whale_delta") or 0)
@@ -1525,19 +1587,19 @@ def dynamic_risk(entry, side, setup, heat=None, whale=None):
         book_dir = -book_dir
         whale_dir = -whale_dir
 
-    target_rr = RR_TARGET
-
+    target_net_rr = NET_RR_TARGET
     if whale_dir >= 0.25 and book_dir >= 0.15:
-        target_rr = max(target_rr, SMART_STRONG_RR)
-    elif whale_dir <= -0.15 or book_dir <= -0.10:
-        target_rr = min(target_rr, SMART_WEAK_RR)
+        target_net_rr = max(target_net_rr, NET_RR_STRONG)
 
-    target_rr = min(SMART_MAX_RR, max(SMART_MIN_RR, target_rr))
+    required_move_pct = _required_tp_move_pct(
+        risk_pct,
+        target_net_rr,
+    )
 
     if side == "BUY":
-        base_tp = entry + (risk_dist * target_rr)
+        base_tp = entry * (1.0 + required_move_pct)
     else:
-        base_tp = entry - (risk_dist * target_rr)
+        base_tp = entry * (1.0 - required_move_pct)
 
     # ----------------------------
     # SMC + OPPOSING HEAT TP
@@ -1548,52 +1610,111 @@ def dynamic_risk(entry, side, setup, heat=None, whale=None):
         for key in ("prior_high", "external_high"):
             level = float(setup.get(key) or 0)
             if level > entry:
-                liquidity_candidates.append((level, f"SMC_{key.upper()}"))
+                liquidity_candidates.append(
+                    (level, f"SMC_{key.upper()}")
+                )
 
         wall_px = float(ask_wall.get("price") or 0)
-        wall_ratio = float(ask_wall.get("ratio_to_median") or 0)
-        if wall_px > entry and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO:
-            liquidity_candidates.append((wall_px, "ORDERBOOK_ASK_WALL"))
+        wall_ratio = float(
+            ask_wall.get("ratio_to_median") or 0
+        )
+        if (
+            wall_px > entry
+            and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO
+        ):
+            liquidity_candidates.append(
+                (wall_px, "ORDERBOOK_ASK_WALL")
+            )
 
         tp = base_tp
-        tp_source = "ADAPTIVE_RR"
+        tp_source = "NET_RR_TARGET"
 
-        for level, source in sorted(liquidity_candidates, key=lambda x: x[0]):
-            # Exit just before visible opposing liquidity rather than inside it.
-            candidate_tp = level - max(buffer_dist * 0.35, entry * 0.0002)
-            rr = (candidate_tp - entry) / risk_dist
-            if rr >= SMART_MIN_RR and candidate_tp < tp:
+        for level, source in sorted(
+            liquidity_candidates,
+            key=lambda x: x[0],
+        ):
+            candidate_tp = level - max(
+                buffer_dist * 0.35,
+                entry * 0.0002,
+            )
+            move_pct = (
+                (candidate_tp - entry) / entry
+                if candidate_tp > entry
+                else 0.0
+            )
+            candidate_net_rr = _net_rr_from_move(
+                move_pct,
+                risk_pct,
+            )
+            if (
+                candidate_net_rr >= NET_RR_MIN
+                and candidate_tp < tp
+            ):
                 tp = candidate_tp
                 tp_source = source
                 break
 
-        effective_rr = (tp - entry) / risk_dist
+        gross_rr = (tp - entry) / risk_dist
+        tp_move_pct = (tp - entry) / entry
 
     else:
         for key in ("prior_low", "external_low"):
             level = float(setup.get(key) or 0)
             if 0 < level < entry:
-                liquidity_candidates.append((level, f"SMC_{key.upper()}"))
+                liquidity_candidates.append(
+                    (level, f"SMC_{key.upper()}")
+                )
 
         wall_px = float(bid_wall.get("price") or 0)
-        wall_ratio = float(bid_wall.get("ratio_to_median") or 0)
-        if 0 < wall_px < entry and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO:
-            liquidity_candidates.append((wall_px, "ORDERBOOK_BID_WALL"))
+        wall_ratio = float(
+            bid_wall.get("ratio_to_median") or 0
+        )
+        if (
+            0 < wall_px < entry
+            and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO
+        ):
+            liquidity_candidates.append(
+                (wall_px, "ORDERBOOK_BID_WALL")
+            )
 
         tp = base_tp
-        tp_source = "ADAPTIVE_RR"
+        tp_source = "NET_RR_TARGET"
 
-        for level, source in sorted(liquidity_candidates, key=lambda x: x[0], reverse=True):
-            candidate_tp = level + max(buffer_dist * 0.35, entry * 0.0002)
-            rr = (entry - candidate_tp) / risk_dist
-            if rr >= SMART_MIN_RR and candidate_tp > tp:
+        for level, source in sorted(
+            liquidity_candidates,
+            key=lambda x: x[0],
+            reverse=True,
+        ):
+            candidate_tp = level + max(
+                buffer_dist * 0.35,
+                entry * 0.0002,
+            )
+            move_pct = (
+                (entry - candidate_tp) / entry
+                if 0 < candidate_tp < entry
+                else 0.0
+            )
+            candidate_net_rr = _net_rr_from_move(
+                move_pct,
+                risk_pct,
+            )
+            if (
+                candidate_net_rr >= NET_RR_MIN
+                and candidate_tp > tp
+            ):
                 tp = candidate_tp
                 tp_source = source
                 break
 
-        effective_rr = (entry - tp) / risk_dist
+        gross_rr = (entry - tp) / risk_dist
+        tp_move_pct = (entry - tp) / entry
 
-    if effective_rr < SMART_MIN_RR:
+    effective_net_rr = _net_rr_from_move(
+        tp_move_pct,
+        risk_pct,
+    )
+
+    if effective_net_rr < NET_RR_MIN:
         return None
 
     sizing = risk_managed_position(entry, sl)
@@ -1603,11 +1724,13 @@ def dynamic_risk(entry, side, setup, heat=None, whale=None):
         "risk_dist": risk_dist,
         "sl": sl,
         "tp": tp,
-        "rr": effective_rr,
+        "rr": effective_net_rr,
+        "gross_rr": gross_rr,
         "capital_risk_pct": sizing["planned_capital_risk_pct"],
         "effective_leverage": sizing["effective_leverage"],
         "position_notional": sizing["position_notional"],
-        "target_rr": target_rr,
+        "target_rr": target_net_rr,
+        "net_rr": effective_net_rr,
         "tp_source": tp_source,
         "sl_source": "SMC_STRUCTURE_PLUS_HEAT",
         "whale_delta": float(whale.get("whale_delta") or 0),
@@ -1722,31 +1845,34 @@ def risk_label(score):
 # V3 LIVE MICROSTRUCTURE CONFIRMATION
 # ============================================================
 
-def live_confirmation(side, delta, book, spread, oi):
+def live_confirmation(side, delta, book, spread, oi, whale_delta=0.0):
+    """
+    V5 entry confirmation.
+
+    Unlike V4, one strong micro source is no longer enough.
+    BOTH aggressive flow and order-book imbalance must support the direction.
+    Strongly hostile whale flow or OI also vetoes the entry.
+    """
     reasons = []
 
     if spread > MAX_SPREAD_BPS:
         reasons.append("SPREAD")
 
-    flow_dir = delta if side == "BUY" else -delta
-    book_dir = book if side == "BUY" else -book
+    flow_dir = float(delta) if side == "BUY" else -float(delta)
+    book_dir = float(book) if side == "BUY" else -float(book)
+    whale_dir = float(whale_delta) if side == "BUY" else -float(whale_delta)
 
-    # Require one strong live confirmation plus at least non-hostile support
-    # from the second source. This avoids demanding two noisy snapshots to
-    # simultaneously exceed the same threshold.
-    micro_ok = (
-        (flow_dir >= MIN_FLOW_DELTA and book_dir >= MIN_SECONDARY_MICRO)
-        or
-        (book_dir >= MIN_BOOK_IMB and flow_dir >= MIN_SECONDARY_MICRO)
-    )
+    if flow_dir < ENTRY_FLOW_MIN:
+        reasons.append("FLOW_NOT_CONFIRMED")
 
-    if not micro_ok:
-        if flow_dir < MIN_SECONDARY_MICRO:
-            reasons.append("FLOW")
-        if book_dir < MIN_SECONDARY_MICRO:
-            reasons.append("BOOK")
-        if not reasons:
-            reasons.append("MICROSTRUCTURE")
+    if book_dir < ENTRY_BOOK_MIN:
+        reasons.append("BOOK_NOT_CONFIRMED")
+
+    if whale_dir < ENTRY_WHALE_HOSTILE_FLOOR:
+        reasons.append("WHALE_FLOW_AGAINST")
+
+    if float(oi) < MIN_OI_CHANGE_PCT:
+        reasons.append("OI_AGAINST")
 
     return len(reasons) == 0, reasons
 
@@ -1953,6 +2079,9 @@ def _build_entry_context(row):
 
         # Risk snapshot
         "risk_pct": row.get("risk_pct"),
+        "initial_risk_pct": row.get("risk_pct"),
+        "initial_sl": row.get("sl"),
+        "initial_tp": row.get("tp"),
         "capital_risk_pct": row.get("capital_risk_pct"),
         "effective_leverage": row.get("effective_leverage"),
         "position_notional": row.get("position_notional"),
@@ -2159,7 +2288,7 @@ def _trade_return_pct(r):
         sl = float(r.get("sl") or 0)
         side = str(r.get("signal") or "").upper()
 
-        if entry <= 0 or exit_price <= 0 or sl <= 0:
+        if entry <= 0 or exit_price <= 0:
             return 0.0
 
         raw = (
@@ -2168,22 +2297,31 @@ def _trade_return_pct(r):
             else (entry - exit_price) / entry
         )
 
-        sizing = risk_managed_position(entry, sl)
+        ctx = _parse_entry_context(r)
         effective_leverage = float(
-            sizing.get("effective_leverage") or 0
+            ctx.get("effective_leverage") or 0
         )
 
-        round_trip_cost = 2.0 * (
-            PAPER_TAKER_FEE_RATE + PAPER_SLIPPAGE_PER_SIDE
-        )
+        if effective_leverage <= 0:
+            initial_sl = float(
+                ctx.get("initial_sl") or sl or 0
+            )
+            sizing = risk_managed_position(
+                entry,
+                initial_sl,
+            )
+            effective_leverage = float(
+                sizing.get("effective_leverage") or 0
+            )
 
-        # Capital return after cost using dynamic position size.
-        # Exact planned SL ~= CAPITAL_RISK_PER_TRADE loss target.
-        return (raw - round_trip_cost) * effective_leverage
+        round_trip_cost = _round_trip_cost_pct()
+
+        return (
+            raw - round_trip_cost
+        ) * effective_leverage
 
     except Exception:
         return 0.0
-
 
 def performance():
     rows = trade_rows(v2_only=True)
@@ -2361,7 +2499,7 @@ def capital_summary():
             else 0.0
         ),
         "closed_trades_today": len(rows),
-        "source": "V3 RSI REVERSAL — FIXED CAPITAL RISK POSITION SIZING",
+        "source": "V5 REVERSAL + ACTIVE TP/SL MANAGER",
         "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
@@ -2393,6 +2531,14 @@ def diagnose_trade_exit(row, result):
     flow_dir = flow if side == "BUY" else -flow
     book_dir = book if side == "BUY" else -book
     whale_dir = whale if side == "BUY" else -whale
+
+    exit_reason = str(row.get("exit_reason") or "")
+    if exit_reason == "ACTIVE_REVERSAL_EXIT":
+        reasons.append("ACTIVE_REVERSAL_PROTECTION")
+    elif exit_reason == "ACTIVE_SL_HIT":
+        reasons.append("ACTIVE_PROFIT_PROTECT_SL")
+    elif exit_reason == "ACTIVE_TP_HIT":
+        reasons.append("ACTIVE_TP_CONTRACTED")
 
     if result == "LOSS":
         if risk_pct > 0 and mfe < risk_pct * 0.25:
@@ -2454,9 +2600,72 @@ def recent_trade_audit(limit=TRADE_AUDIT_LIMIT):
 # TP / SL CHECKS
 # ============================================================
 
+def _active_trade_micro_snapshot(symbol, side):
+    """
+    Fresh live microstructure snapshot for an already-open trade.
+    Used only for risk management; it does not create a new trade.
+    """
+    try:
+        heat = orderbook_heat_metrics(symbol) or {}
+        flow = flow_metrics_detailed(symbol) or {}
+
+        delta = float(flow.get("delta") or 0)
+        book = float(heat.get("book_imb") or 0)
+        whale = float(flow.get("whale_delta") or 0)
+
+        flow_dir = delta if side == "BUY" else -delta
+        book_dir = book if side == "BUY" else -book
+        whale_dir = whale if side == "BUY" else -whale
+
+        hostile = (
+            flow_dir <= -ACTIVE_REVERSAL_FLOW
+            and book_dir <= -ACTIVE_REVERSAL_BOOK
+        )
+        weak = (
+            flow_dir < MIN_SECONDARY_MICRO
+            or book_dir < MIN_SECONDARY_MICRO
+        )
+        strong = (
+            flow_dir >= ENTRY_FLOW_MIN
+            and book_dir >= ENTRY_BOOK_MIN
+            and whale_dir >= 0.0
+        )
+
+        return {
+            "flow_dir": flow_dir,
+            "book_dir": book_dir,
+            "whale_dir": whale_dir,
+            "hostile": hostile,
+            "weak": weak,
+            "strong": strong,
+        }
+
+    except Exception as e:
+        scan_log(
+            f"ACTIVE MICRO ERROR {symbol}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return None
+
+
+def _current_net_result(entry, px, side):
+    raw = (
+        (px - entry) / entry
+        if side == "BUY"
+        else (entry - px) / entry
+    )
+    return raw - _round_trip_cost_pct()
+
+
 def check_open_trades():
-    # Monitor all open paper trades so older strategy versions can finish.
-    # Current dashboard/performance remains filtered to STRATEGY_VERSION.
+    """
+    V5 active manager:
+    - Old strategy versions keep their original TP/SL behavior.
+    - Current V5 trades can only REDUCE risk after entry.
+    - Break-even / profit-lock / trailing SL are automatic.
+    - If live flow + book strongly reverse, the trade can exit early.
+    - If momentum weakens while profitable, TP can contract closer.
+    """
     rows = trade_rows(v2_only=False)
 
     dirty = False
@@ -2468,7 +2677,7 @@ def check_open_trades():
 
         try:
             symbol = r["symbol"]
-            side = r["signal"]
+            side = str(r["signal"]).upper()
 
             entry = float(r["entry"])
             tp = float(r["tp"])
@@ -2478,14 +2687,30 @@ def check_open_trades():
             r["last_checked_price"] = px
 
             if side == "BUY":
-                favorable_pct = max(0.0, ((px - entry) / entry) * 100.0)
-                adverse_pct = max(0.0, ((entry - px) / entry) * 100.0)
+                favorable_pct = max(
+                    0.0,
+                    ((px - entry) / entry) * 100.0,
+                )
+                adverse_pct = max(
+                    0.0,
+                    ((entry - px) / entry) * 100.0,
+                )
             else:
-                favorable_pct = max(0.0, ((entry - px) / entry) * 100.0)
-                adverse_pct = max(0.0, ((px - entry) / entry) * 100.0)
+                favorable_pct = max(
+                    0.0,
+                    ((entry - px) / entry) * 100.0,
+                )
+                adverse_pct = max(
+                    0.0,
+                    ((px - entry) / entry) * 100.0,
+                )
 
-            old_mfe = float(r.get("max_favorable_pct") or 0)
-            old_mae = float(r.get("max_adverse_pct") or 0)
+            old_mfe = float(
+                r.get("max_favorable_pct") or 0
+            )
+            old_mae = float(
+                r.get("max_adverse_pct") or 0
+            )
 
             if favorable_pct > old_mfe:
                 r["max_favorable_pct"] = favorable_pct
@@ -2498,6 +2723,7 @@ def check_open_trades():
             result = None
             exit_reason = ""
 
+            # Hard TP/SL always has priority if already crossed.
             if side == "BUY":
                 if px >= tp:
                     result = "WIN"
@@ -2513,6 +2739,207 @@ def check_open_trades():
                     result = "LOSS"
                     exit_reason = "SL_HIT"
 
+            managed_current = (
+                str(r.get("strategy_version") or "")
+                == STRATEGY_VERSION
+            )
+
+            # ------------------------------------------
+            # V5 ACTIVE MANAGEMENT
+            # ------------------------------------------
+            if (
+                result is None
+                and managed_current
+                and ACTIVE_MANAGER_ENABLED
+            ):
+                ctx = _parse_entry_context(r)
+
+                initial_risk_pct = float(
+                    ctx.get("initial_risk_pct")
+                    or ctx.get("risk_pct")
+                    or 0
+                )
+                if initial_risk_pct <= 0:
+                    initial_sl = float(
+                        ctx.get("initial_sl") or sl
+                    )
+                    initial_risk_pct = (
+                        abs(entry - initial_sl) / entry
+                        if entry > 0
+                        else 0
+                    )
+
+                risk_pct_points = (
+                    initial_risk_pct * 100.0
+                )
+                favorable_r = (
+                    favorable_pct / risk_pct_points
+                    if risk_pct_points > 0
+                    else 0.0
+                )
+                adverse_r = (
+                    adverse_pct / risk_pct_points
+                    if risk_pct_points > 0
+                    else 0.0
+                )
+
+                old_sl = sl
+                old_tp = tp
+                cost = _round_trip_cost_pct()
+
+                # 1) Break-even after 0.65R.
+                if favorable_r >= ACTIVE_BE_TRIGGER_R:
+                    if side == "BUY":
+                        be_sl = entry * (1.0 + cost)
+                        if be_sl < px:
+                            sl = max(sl, be_sl)
+                    else:
+                        be_sl = entry * (1.0 - cost)
+                        if be_sl > px:
+                            sl = min(sl, be_sl)
+
+                # 2) Lock a portion of R after reaching 1R.
+                if favorable_r >= ACTIVE_LOCK_TRIGGER_R:
+                    lock_move = (
+                        cost
+                        + initial_risk_pct * ACTIVE_LOCK_R
+                    )
+                    if side == "BUY":
+                        lock_sl = entry * (
+                            1.0 + lock_move
+                        )
+                        if lock_sl < px:
+                            sl = max(sl, lock_sl)
+                    else:
+                        lock_sl = entry * (
+                            1.0 - lock_move
+                        )
+                        if lock_sl > px:
+                            sl = min(sl, lock_sl)
+
+                # 3) Trail once the trade is well in profit.
+                if favorable_r >= ACTIVE_TRAIL_TRIGGER_R:
+                    trail_dist = (
+                        entry
+                        * initial_risk_pct
+                        * ACTIVE_TRAIL_GAP_R
+                    )
+                    if side == "BUY":
+                        trail_sl = px - trail_dist
+                        if trail_sl < px:
+                            sl = max(sl, trail_sl)
+                    else:
+                        trail_sl = px + trail_dist
+                        if trail_sl > px:
+                            sl = min(sl, trail_sl)
+
+                if sl != old_sl:
+                    r["sl"] = sl
+                    dirty = True
+                    scan_log(
+                        f"ACTIVE SL {symbol} {side}: "
+                        f"{old_sl:.8g} -> {sl:.8g} | "
+                        f"MFE={favorable_r:.2f}R"
+                    )
+
+                micro = _active_trade_micro_snapshot(
+                    symbol,
+                    side,
+                )
+
+                if micro:
+                    # 4) Strong reversal: do not wait for full SL.
+                    if micro["hostile"] and (
+                        adverse_r
+                        >= ACTIVE_EARLY_EXIT_ADVERSE_R
+                        or favorable_r
+                        >= ACTIVE_EARLY_EXIT_FAVORABLE_R
+                    ):
+                        net_now = _current_net_result(
+                            entry,
+                            px,
+                            side,
+                        )
+                        result = (
+                            "WIN"
+                            if net_now > 0
+                            else "LOSS"
+                        )
+                        exit_reason = (
+                            "ACTIVE_REVERSAL_EXIT"
+                        )
+
+                    # 5) Weakening momentum while already profitable:
+                    # pull TP closer, but never move it behind price.
+                    elif (
+                        micro["weak"]
+                        and favorable_r
+                        >= ACTIVE_TP_CONTRACT_TRIGGER_R
+                    ):
+                        ahead_dist = (
+                            entry
+                            * initial_risk_pct
+                            * ACTIVE_TP_AHEAD_R
+                        )
+                        if side == "BUY":
+                            candidate_tp = px + ahead_dist
+                            if (
+                                candidate_tp > px
+                                and candidate_tp < tp
+                            ):
+                                tp = candidate_tp
+                        else:
+                            candidate_tp = px - ahead_dist
+                            if (
+                                0 < candidate_tp < px
+                                and candidate_tp > tp
+                            ):
+                                tp = candidate_tp
+
+                        if tp != old_tp:
+                            r["tp"] = tp
+                            dirty = True
+                            scan_log(
+                                f"ACTIVE TP {symbol} {side}: "
+                                f"{old_tp:.8g} -> {tp:.8g} | "
+                                f"momentum weakened"
+                            )
+
+                # Re-check after active TP/SL changes.
+                if result is None:
+                    if side == "BUY":
+                        if px >= tp:
+                            result = "WIN"
+                            exit_reason = "ACTIVE_TP_HIT"
+                        elif px <= sl:
+                            net_now = _current_net_result(
+                                entry,
+                                px,
+                                side,
+                            )
+                            result = (
+                                "WIN"
+                                if net_now > 0
+                                else "LOSS"
+                            )
+                            exit_reason = "ACTIVE_SL_HIT"
+                    else:
+                        if px <= tp:
+                            result = "WIN"
+                            exit_reason = "ACTIVE_TP_HIT"
+                        elif px >= sl:
+                            net_now = _current_net_result(
+                                entry,
+                                px,
+                                side,
+                            )
+                            result = (
+                                "WIN"
+                                if net_now > 0
+                                else "LOSS"
+                            )
+                            exit_reason = "ACTIVE_SL_HIT"
+
             if result:
                 r["status"] = result
                 r["exit_price"] = px
@@ -2522,7 +2949,10 @@ def check_open_trades():
                 )
 
                 dirty = True
-                diagnosis = diagnose_trade_exit(r, result)
+                diagnosis = diagnose_trade_exit(
+                    r,
+                    result,
+                )
 
                 closed_messages.append(
                     (
@@ -2530,16 +2960,18 @@ def check_open_trades():
                         side,
                         result,
                         entry,
-                        tp,
-                        sl,
+                        float(r["tp"]),
+                        float(r["sl"]),
                         px,
                         diagnosis,
+                        exit_reason,
                     )
                 )
 
         except Exception as e:
             scan_log(
-                f"OPEN TRADE CHECK ERROR {r.get('symbol')}: {e}"
+                f"OPEN TRADE CHECK ERROR "
+                f"{r.get('symbol')}: {e}"
             )
 
     if dirty:
@@ -2557,24 +2989,46 @@ def check_open_trades():
             sl,
             px,
             diagnosis,
+            exit_reason,
         ) in closed_messages:
 
             icon = "✅" if result == "WIN" else "❌"
-            label = "TP HIT / WIN" if result == "WIN" else "SL HIT / LOSS"
-            reason_text = ", ".join(diagnosis["reasons"])
+            if exit_reason == "ACTIVE_REVERSAL_EXIT":
+                label = (
+                    f"ACTIVE REVERSAL EXIT / {result}"
+                )
+            elif exit_reason == "ACTIVE_SL_HIT":
+                label = (
+                    f"ACTIVE SL EXIT / {result}"
+                )
+            elif exit_reason == "ACTIVE_TP_HIT":
+                label = "ACTIVE TP HIT / WIN"
+            else:
+                label = (
+                    "TP HIT / WIN"
+                    if result == "WIN"
+                    else "SL HIT / LOSS"
+                )
+
+            reason_text = ", ".join(
+                diagnosis["reasons"]
+            )
 
             telegram_async(
-                f"{icon} V4 {label} — {symbol}\n"
+                f"{icon} V5 {label} — {symbol}\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Side: {side}\n"
                 f"Entry: {entry:.8g}\n"
                 f"Exit: {px:.8g}\n"
-                f"TP: {tp:.8g}\n"
-                f"SL: {sl:.8g}\n"
-                f"MFE: {diagnosis['mfe_pct']:.3f}%\n"
-                f"MAE: {diagnosis['mae_pct']:.3f}%\n"
+                f"Final TP: {tp:.8g}\n"
+                f"Final SL: {sl:.8g}\n"
+                f"Exit Reason: {exit_reason}\n"
+                f"MFE: "
+                f"{diagnosis['mfe_pct']:.3f}%\n"
+                f"MAE: "
+                f"{diagnosis['mae_pct']:.3f}%\n"
                 f"Diagnosis: {reason_text}\n\n"
-                f"📊 V4 DIRECTION AUDIT\n"
+                f"📊 V5 ACTIVE MANAGER\n"
                 f"Trades: {p['total_trades']}\n"
                 f"Wins: {p['wins']}\n"
                 f"Losses: {p['losses']}\n"
@@ -2704,12 +3158,21 @@ def reversal_rsi_context(symbol):
     side = None
     reason = "RSI_NOT_IMMEDIATE_EXTREME"
 
-    if r_prev >= RSI_OVERBOUGHT and turn_down:
+    sell_reclaim_ok = (
+        (not RSI_RECLAIM_REQUIRED)
+        or (r_now <= RSI_OVERBOUGHT)
+    )
+    buy_reclaim_ok = (
+        (not RSI_RECLAIM_REQUIRED)
+        or (r_now >= RSI_OVERSOLD)
+    )
+
+    if r_prev >= RSI_OVERBOUGHT and turn_down and sell_reclaim_ok:
         side = "SELL"
-        reason = "PREV_OVERBOUGHT_TURN_DOWN"
-    elif r_prev <= RSI_OVERSOLD and turn_up:
+        reason = "OVERBOUGHT_RECLAIM_TURN_DOWN"
+    elif r_prev <= RSI_OVERSOLD and turn_up and buy_reclaim_ok:
         side = "BUY"
-        reason = "PREV_OVERSOLD_TURN_UP"
+        reason = "OVERSOLD_RECLAIM_TURN_UP"
 
     return {
         "side": side,
@@ -3002,6 +3465,7 @@ def _deep_scan_one(item):
 
         live_ok, live_reasons = live_confirmation(
             side, delta, book, spread, oi,
+            whale_delta=whale.get("whale_delta", 0.0),
         )
 
         q = reversal_quality_score(
@@ -3137,11 +3601,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V4 DIRECTION AUDIT SCAN START")
+    scan_log("RAZA V5 ACTIVE MANAGER SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V4 direction-audit scanning Top {TOP_COINS} Bitget Futures..."
+            f"V5 active-manager scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -3310,7 +3774,7 @@ def scan_once():
     ]
 
     scan_log(
-        f"V4 DEEP SCAN START: {len(deep_items)} candidates"
+        f"V5 DEEP SCAN START: {len(deep_items)} candidates"
     )
 
     alerts = 0
@@ -3379,7 +3843,7 @@ def scan_once():
                 p = performance()
 
                 telegram_async(
-                    f"🚨 RAZA SHAH SIGNAL V4 — TRADE READY\n\n"
+                    f"🚨 RAZA SHAH SIGNAL V5 — TRADE READY\n\n"
                     f"Exchange: BITGET FUTURES\n"
                     f"Coin: {c['symbol']}\n"
                     f"Side: "
@@ -3425,12 +3889,12 @@ def scan_once():
 
         if alerts:
             state["status"] = (
-                f"V4: {alerts} fully validated trade ready"
+                f"V5: {alerts} fully validated trade ready"
             )
 
         elif best:
             state["status"] = (
-                f"V4 best: {best['symbol']} "
+                f"V5 best: {best['symbol']} "
                 f"{'LONG' if best['signal']=='BUY' else 'SHORT'} "
                 f"{best['score']}/100 — {best['status']}"
             )
@@ -3446,7 +3910,7 @@ def scan_once():
             )
 
             state["status"] = (
-                f"V4 waiting — main block: {top_block}"
+                f"V5 waiting — main block: {top_block}"
             )
 
         if (
@@ -3460,7 +3924,7 @@ def scan_once():
     save_state_snapshot()
 
     scan_log(
-        f"V4 SCAN COMPLETE in {elapsed}s "
+        f"V5 SCAN COMPLETE in {elapsed}s "
         f"| alerts={alerts} "
         f"| best={best['symbol'] if best else 'NONE'} "
         f"| blocked={blocked_counts}"
@@ -3672,7 +4136,7 @@ def telegram_hourly_status_loop():
                 best_line = "Best: none"
 
             telegram_async(
-                f"🟢 RAZA SHAH SIGNAL V4\n"
+                f"🟢 RAZA SHAH SIGNAL V5\n"
                 f"1 HOUR STATUS\n\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
@@ -3737,7 +4201,7 @@ def scanner_loop():
         f"{KSA_SESSION_START}:00-{KSA_SESSION_END}:00 "
         f"({'ON' if SESSION_FILTER_ENABLED else 'OFF'})\n"
         f"BTC: CONTEXT ONLY (no hard block)\n"
-        f"Dynamic R:R: 1:{RR_TARGET:.2f}\n"
+        f"Net R:R Target: 1:{NET_RR_TARGET:.2f}\n"
         f"Paper Tester: ${TEST_START_CAPITAL:.0f}\n"
         f"Capital Risk/Trade: "
         f"{CAPITAL_RISK_PER_TRADE*100:.2f}%\n"
@@ -3918,8 +4382,9 @@ def api_status():
         "strategy_version": STRATEGY_VERSION,
         "build_version": BUILD_VERSION,
         "logic": (
-            "15m immediate RSI extreme turn → true liquidity sweep → "
-            "HTF conflict veto → 5m CHoCH → live flow/book/OI → smart risk"
+            "15m RSI extreme reclaim → true liquidity sweep → "
+            "HTF conflict veto → 5m CHoCH → BOTH flow+book confirm → "
+            "net-RR TP → active BE/trailing/reversal protection"
         ),
         "risk_rules": {
             "score_role": "QUALITY ONLY",
