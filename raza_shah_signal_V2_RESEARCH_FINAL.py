@@ -41,7 +41,7 @@ from flask import (
 # ============================================================
 
 STRATEGY_VERSION = "V4_DIRECTION_AUDIT_20260815"
-BUILD_VERSION = "V4_DIRECTION_AUDIT_1"
+BUILD_VERSION = "V4_DIRECTION_AUDIT_LOGGING_2"
 REVERSAL_TEST_START_UTC = "2026-08-15T08:37:00+00:00"  # KSA 11:37, new reversal forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
@@ -1896,40 +1896,66 @@ def write_trade_rows(rows):
     except Exception as e:
         print(f"[DB] TRADE WRITE ERROR: {e}", flush=True)
 
-def add_open_trade(row):
-    trade_id = (
-        f'{STRATEGY_VERSION}-'
-        f'{row["symbol"]}-'
-        f'{int(time.time()*1000)}'
-    )
+def _build_entry_context(row):
+    """
+    Build a complete snapshot of WHY the direction was selected and WHY the
+    trade was allowed. This is audit/logging only; it does not change the
+    V4 entry logic, score, TP, SL, or risk model.
+    """
+    side = str(row.get("signal") or "").upper()
 
-    rows = trade_rows(v2_only=True)
-
-    context = {
+    return {
+        "context_schema_version": 2,
         "build_version": BUILD_VERSION,
+        "strategy_version": STRATEGY_VERSION,
+        "symbol": row.get("symbol"),
+        "signal": side,
+
+        # Direction decision
+        "direction_basis": (
+            "15M_OVERSOLD_TURN_UP"
+            if side == "BUY"
+            else "15M_OVERBOUGHT_TURN_DOWN"
+            if side == "SELL"
+            else "UNKNOWN"
+        ),
+        "rsi_buy_threshold": RSI_OVERSOLD,
+        "rsi_sell_threshold": RSI_OVERBOUGHT,
+        "rsi_turn_min": RSI_TURN_MIN,
         "reversal_reason": row.get("reversal_reason"),
         "rsi_15m": row.get("rsi_15m"),
         "rsi_prev": row.get("rsi_prev"),
         "rsi_peak": row.get("rsi_peak"),
         "rsi_trough": row.get("rsi_trough"),
         "rsi_turn_amount": row.get("rsi_turn_amount"),
+
+        # HTF context / veto
         "regime_4h": row.get("regime_4h"),
         "structure_1h": row.get("structure_1h"),
         "structure_1h_strength": row.get("structure_1h_strength"),
+
+        # 15M liquidity + 5M confirmation
         "setup_15m": row.get("setup_15m"),
         "sweep_penetration_pct": row.get("sweep_penetration_pct"),
         "trigger_5m": row.get("trigger_5m"),
         "trigger_choch": row.get("trigger_choch"),
+
+        # Live market confirmation
         "flow_delta": row.get("flow_delta"),
+        "buy_usd_60s": row.get("buy_usd_60s"),
+        "sell_usd_60s": row.get("sell_usd_60s"),
         "book_imb": row.get("book_imb"),
         "whale_delta": row.get("whale_delta"),
         "oi_change_pct": row.get("oi_change_pct"),
         "spread_bps": row.get("spread_bps"),
         "vol_ratio": row.get("vol_ratio"),
         "atr_15m_pct": row.get("atr_15m_pct"),
+
+        # Risk snapshot
         "risk_pct": row.get("risk_pct"),
         "capital_risk_pct": row.get("capital_risk_pct"),
         "effective_leverage": row.get("effective_leverage"),
+        "position_notional": row.get("position_notional"),
         "rr": row.get("rr"),
         "tp_source": row.get("tp_source"),
         "sl_source": row.get("sl_source"),
@@ -1937,34 +1963,194 @@ def add_open_trade(row):
         "ask_wall_price": row.get("ask_wall_price"),
         "bid_wall_ratio": row.get("bid_wall_ratio"),
         "ask_wall_ratio": row.get("ask_wall_ratio"),
+
+        "score": row.get("score"),
+        "entry": row.get("price"),
+        "tp": row.get("tp"),
+        "sl": row.get("sl"),
+        "hard_confirm": row.get("hard_confirm"),
+        "blocked_reasons": row.get("blocked_reasons"),
     }
 
-    rows.append({
-        "trade_id": trade_id,
-        "time_utc": row["time_utc"],
-        "closed_time_utc": "",
-        "symbol": row["symbol"],
-        "signal": row["signal"],
-        "score": row["score"],
-        "entry": row["price"],
-        "tp": row["tp"],
-        "sl": row["sl"],
-        "status": "OPEN",
-        "exit_price": "",
-        "strategy_version": STRATEGY_VERSION,
-        "entry_context_json": json.dumps(
-            context,
-            ensure_ascii=False,
-            default=str,
-        ),
-        "max_favorable_pct": 0.0,
-        "max_adverse_pct": 0.0,
-        "last_checked_price": row["price"],
-        "exit_reason": "",
-    })
 
-    write_trade_rows(rows)
-    return trade_id
+def add_open_trade(row):
+    """
+    V4 audit-safe trade insert.
+
+    Important:
+    - Same STRATEGY_VERSION is preserved so the forward-test does not reset.
+    - The complete entry context is written in the SAME database INSERT as
+      the trade itself and is immediately read back for verification.
+    - A PostgreSQL advisory transaction lock prevents two Render workers /
+      services from opening the same symbol+side at the same time.
+    - This changes logging/data integrity only, not trade-selection logic.
+    """
+    trade_id = (
+        f'{STRATEGY_VERSION}-'
+        f'{row["symbol"]}-'
+        f'{int(time.time()*1000)}'
+    )
+
+    context = _build_entry_context(row)
+    context_json = json.dumps(
+        context,
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )
+
+    if not DATABASE_URL:
+        scan_log(
+            f"AUDIT SAVE SKIPPED {row.get('symbol')}: DATABASE_URL missing"
+        )
+        return None
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Cross-process/service lock: fixes the race where two Render
+                # services scan the same coin at the same moment.
+                lock_key = (
+                    f"{STRATEGY_VERSION}:"
+                    f"{row.get('symbol')}:"
+                    f"{row.get('signal')}"
+                )
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (lock_key,),
+                )
+
+                # Hard duplicate guard for an already-open same-side trade.
+                cur.execute(
+                    """
+                    SELECT trade_id
+                    FROM trade_results
+                    WHERE strategy_version = %s
+                      AND symbol = %s
+                      AND signal = %s
+                      AND status = 'OPEN'
+                    ORDER BY time_utc DESC
+                    LIMIT 1
+                    """,
+                    (
+                        STRATEGY_VERSION,
+                        row.get("symbol"),
+                        row.get("signal"),
+                    ),
+                )
+                existing = cur.fetchone()
+
+                if existing:
+                    existing_id = (
+                        existing.get("trade_id")
+                        if isinstance(existing, dict)
+                        else existing[0]
+                    )
+                    scan_log(
+                        f"DUPLICATE BLOCKED {row.get('symbol')} "
+                        f"{row.get('signal')} -> {existing_id}"
+                    )
+                    return existing_id
+
+                cur.execute(
+                    """
+                    INSERT INTO trade_results (
+                        trade_id,
+                        time_utc,
+                        closed_time_utc,
+                        symbol,
+                        signal,
+                        score,
+                        entry,
+                        tp,
+                        sl,
+                        status,
+                        exit_price,
+                        strategy_version,
+                        entry_context_json,
+                        max_favorable_pct,
+                        max_adverse_pct,
+                        last_checked_price,
+                        exit_reason
+                    )
+                    VALUES (
+                        %s,%s,%s,%s,%s,%s,
+                        %s,%s,%s,%s,%s,%s,
+                        %s,%s,%s,%s,%s
+                    )
+                    """,
+                    (
+                        trade_id,
+                        row["time_utc"],
+                        "",
+                        row["symbol"],
+                        row["signal"],
+                        float(row.get("score") or 0),
+                        float(row.get("price") or 0),
+                        float(row.get("tp") or 0),
+                        float(row.get("sl") or 0),
+                        "OPEN",
+                        None,
+                        STRATEGY_VERSION,
+                        context_json,
+                        0.0,
+                        0.0,
+                        float(row.get("price") or 0),
+                        "",
+                    ),
+                )
+
+                # Verify the snapshot was actually persisted.
+                cur.execute(
+                    """
+                    SELECT entry_context_json
+                    FROM trade_results
+                    WHERE trade_id = %s
+                    """,
+                    (trade_id,),
+                )
+                verify_row = cur.fetchone()
+
+            conn.commit()
+
+        saved_json = None
+        if verify_row:
+            saved_json = (
+                verify_row.get("entry_context_json")
+                if isinstance(verify_row, dict)
+                else verify_row[0]
+            )
+
+        if saved_json:
+            try:
+                parsed = json.loads(saved_json)
+                scan_log(
+                    f"AUDIT CONTEXT SAVED {row['symbol']} "
+                    f"{row['signal']} | RSI "
+                    f"{parsed.get('rsi_prev')} -> "
+                    f"{parsed.get('rsi_15m')} | "
+                    f"Flow {parsed.get('flow_delta')} | "
+                    f"Book {parsed.get('book_imb')}"
+                )
+            except Exception:
+                scan_log(
+                    f"AUDIT CONTEXT SAVED {row['symbol']} "
+                    f"{row['signal']} | JSON VERIFY WARNING"
+                )
+        else:
+            scan_log(
+                f"AUDIT CONTEXT SAVE FAILED {row['symbol']} "
+                f"{row['signal']}"
+            )
+
+        return trade_id
+
+    except Exception as e:
+        scan_log(
+            f"AUDIT TRADE INSERT ERROR {row.get('symbol')}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return None
 
 def _trade_return_pct(r):
     try:
@@ -2250,7 +2436,10 @@ def recent_trade_audit(limit=TRADE_AUDIT_LIMIT):
 
     for r in rows[-max(1, int(limit)):]:
         item = dict(r)
-        item["entry_context"] = _parse_entry_context(r)
+        ctx = _parse_entry_context(r)
+        item["entry_context"] = ctx
+        item["entry_context_logged"] = bool(ctx)
+        item["direction_basis"] = ctx.get("direction_basis") if ctx else "CONTEXT_NOT_RECORDED"
         item["diagnosis"] = diagnose_trade_exit(
             r,
             str(r.get("status") or "OPEN"),
