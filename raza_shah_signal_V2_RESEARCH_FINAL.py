@@ -41,7 +41,7 @@ from flask import (
 # ============================================================
 
 STRATEGY_VERSION = "V6_RESEARCH_FLOW_MOMENTUM_20260815"
-BUILD_VERSION = "V6_RESEARCH_SIGNAL_GENERATOR_1"
+BUILD_VERSION = "V6_RESEARCH_SIGNAL_GENERATOR_1A"
 REVERSAL_TEST_START_UTC = "2026-08-15T10:53:00+00:00"  # V6 research-flow clean forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
@@ -2373,6 +2373,41 @@ def performance():
     }
 
 
+
+def legacy_trade_summary(limit=20):
+    """
+    Dashboard-only history of CLOSED trades from older strategy versions.
+    These rows are NEVER mixed into V6 performance/capital statistics.
+    """
+    rows = trade_rows(v2_only=False)
+
+    legacy = [
+        dict(r)
+        for r in rows
+        if (
+            str(r.get("strategy_version") or "") != STRATEGY_VERSION
+            and str(r.get("status") or "").upper() in ("WIN", "LOSS")
+        )
+    ]
+
+    legacy.sort(
+        key=lambda r: str(r.get("closed_time_utc") or r.get("time_utc") or ""),
+        reverse=True,
+    )
+
+    items = legacy[:max(1, int(limit))]
+    wins = sum(1 for r in legacy if str(r.get("status") or "").upper() == "WIN")
+    losses = sum(1 for r in legacy if str(r.get("status") or "").upper() == "LOSS")
+
+    return {
+        "total_closed": len(legacy),
+        "wins": wins,
+        "losses": losses,
+        "items": items,
+        "note": "Legacy history only. Not counted in V6 performance or capital.",
+    }
+
+
 def forming_performance():
     # V2 does NOT treat a "forming" candidate as a paper trade.
     # This avoids fake performance from non-entered setups.
@@ -3845,7 +3880,9 @@ def scan_once():
         state["scan_progress"] = "0/0"
         state["blocked_counts"] = {}
 
-    check_open_trades()
+    # Open trades are monitored only by trade_monitor_loop().
+    # Do not call check_open_trades() here; doing so can race the 20s monitor
+    # and send duplicate Telegram close alerts for the same DB row.
 
     # ----------------------------
     # KSA SESSION HARD FILTER
@@ -4418,7 +4455,7 @@ def telegram_hourly_status_loop():
 
 
 def trade_monitor_loop():
-    scan_log("V2 LIVE TP/SL MONITOR STARTED")
+    scan_log("V6 LIVE TP/SL MONITOR STARTED")
 
     while True:
         try:
@@ -4634,6 +4671,7 @@ def api_status():
     x["forming_history"] = []
     x["capital_summary"] = capital_summary()
     x["trade_audit"] = recent_trade_audit(20)
+    x["legacy_trades"] = legacy_trade_summary(20)
     x["active_build_marker"] = f"{STRATEGY_VERSION} | {BUILD_VERSION}"
     x["signal_generator"] = x.get("signal_generator") or {"action": "WAIT", "reason": "NO_SETUP"}
     x["research_watchlist"] = x.get("research_watchlist") or {"long": [], "short": []}
