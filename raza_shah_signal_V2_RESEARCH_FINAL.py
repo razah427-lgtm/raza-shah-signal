@@ -41,7 +41,7 @@ from flask import (
 # ============================================================
 
 STRATEGY_VERSION = "V2R2_RESEARCH_STABLE"
-BUILD_VERSION = "V3_FINAL_RESEARCH_LOGIC"
+BUILD_VERSION = "V3_ANALYZER_ENGINE"
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -83,7 +83,7 @@ SWEEP_BUFFER_PCT = float(os.getenv("SWEEP_BUFFER_PCT", "0.0015"))
 RETEST_DISTANCE_PCT = float(os.getenv("RETEST_DISTANCE_PCT", "0.0075"))
 
 # Dynamic risk
-RR_TARGET = float(os.getenv("RR_TARGET", "1.80"))
+RR_TARGET = float(os.getenv("RR_TARGET", "1.50"))
 MIN_STOP_PCT = float(os.getenv("MIN_STOP_PCT", "0.0040"))  # 0.40%
 MAX_STOP_PCT = float(os.getenv("MAX_STOP_PCT", "0.0100"))  # 1.00%
 ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULT", "1.10"))
@@ -1946,153 +1946,317 @@ def _light_scan_one(symbol):
 # V2 DEEP SCAN
 # ============================================================
 
+def analyzer_timeframe_snapshot(symbol, interval):
+    """RAZA AI ANALYZER V2 timeframe logic, adapted to the scanner.
+
+    Important: the original analyzer scores the current/live candle.  We keep
+    that behaviour here so the automated scanner and the standalone analyzer
+    make the same directional decision from the same market state.
+    """
+    candles = candle_dicts(symbol, interval, 200, drop_live=False)
+
+    if len(candles) < 60:
+        raise RuntimeError(f"Not enough {interval} candles for {symbol}")
+
+    closes = [c["close"] for c in candles]
+    volumes = [c["base_volume"] for c in candles]
+
+    e20 = ema(closes, 20)
+    e50 = ema(closes, 50)
+    e200 = ema(closes, 200)
+    last = closes[-1]
+
+    prior_volumes = volumes[-21:-1] if len(volumes) > 21 else volumes[:-1]
+    base_volume = (
+        sum(prior_volumes) / len(prior_volumes)
+        if prior_volumes
+        else (volumes[-1] if volumes else 0.0)
+    )
+    volume_ratio_now = volumes[-1] / max(base_volume, 1e-12)
+
+    return {
+        "price": last,
+        "ema20": e20,
+        "ema50": e50,
+        "ema200": e200,
+        "rsi": rsi(closes, 14),
+        "volume_ratio": volume_ratio_now,
+        "atr": atr_value(candles, 14),
+        "bullish": last > e20 > e50,
+        "bearish": last < e20 < e50,
+    }
+
+
+def analyzer_orderbook_metrics(symbol):
+    """Same 50-level notional imbalance used by RAZA AI ANALYZER V2."""
+    data = raw_order_book(symbol, 50)
+
+    if not isinstance(data, dict):
+        return {"imbalance": 0.0, "spread_bps": 999.0}
+
+    bids = data.get("bids") or []
+    asks = data.get("asks") or []
+
+    if not bids or not asks:
+        return {"imbalance": 0.0, "spread_bps": 999.0}
+
+    bid_notional = 0.0
+    ask_notional = 0.0
+
+    for row in bids:
+        try:
+            bid_notional += float(row[0]) * float(row[1])
+        except Exception:
+            pass
+
+    for row in asks:
+        try:
+            ask_notional += float(row[0]) * float(row[1])
+        except Exception:
+            pass
+
+    total = bid_notional + ask_notional
+    imbalance = (
+        (bid_notional - ask_notional) / total
+        if total
+        else 0.0
+    )
+
+    try:
+        best_bid = float(bids[0][0])
+        best_ask = float(asks[0][0])
+        mid = (best_bid + best_ask) / 2.0
+        spread_bps = (
+            ((best_ask - best_bid) / mid) * 10000.0
+            if mid
+            else 999.0
+        )
+    except Exception:
+        spread_bps = 999.0
+
+    return {
+        "imbalance": imbalance,
+        "spread_bps": spread_bps,
+    }
+
+
+def raza_ai_analyzer_decision(symbol):
+    """Exact RAZA AI ANALYZER V2 scoring adapted for auto-scanning.
+
+    Direction weights:
+      4H 24, 1H 20, 15M 16, 5M 8
+    Extras:
+      15M RSI 8, 15M volume 7, order book 8, flow 9, rising OI 5
+    LONG/SHORT requires a 24-point directional edge.  Confidence uses the
+    same analyzer conversion.  The existing RAZA SHAH SIGNAL 85+ gate is
+    preserved outside this function so the dashboard and alert policy remain
+    unchanged.
+    """
+    snapshots = {
+        tf: analyzer_timeframe_snapshot(symbol, tf)
+        for tf in ("5m", "15m", "1h", "4h")
+    }
+
+    book_data = analyzer_orderbook_metrics(symbol)
+    spread = float(book_data.get("spread_bps") or 999.0)
+    book = float(book_data.get("imbalance") or 0.0)
+
+    delta, buy, sell = flow_metrics(symbol)
+    oi = oi_change_pct(symbol)
+
+    long_score = 0
+    short_score = 0
+    reasons_long = []
+    reasons_short = []
+
+    weights = {
+        "4h": 24,
+        "1h": 20,
+        "15m": 16,
+        "5m": 8,
+    }
+
+    for tf, weight in weights.items():
+        snap = snapshots[tf]
+        if snap["bullish"]:
+            long_score += weight
+            reasons_long.append(f"{tf} trend bullish")
+        elif snap["bearish"]:
+            short_score += weight
+            reasons_short.append(f"{tf} trend bearish")
+
+    r15 = float(snapshots["15m"]["rsi"])
+    if 52 <= r15 <= 72:
+        long_score += 8
+        reasons_long.append("15m momentum supports buyers")
+    elif 28 <= r15 <= 48:
+        short_score += 8
+        reasons_short.append("15m momentum supports sellers")
+
+    vr = float(snapshots["15m"]["volume_ratio"])
+    if vr >= 1.15:
+        if snapshots["15m"]["bullish"]:
+            long_score += 7
+            reasons_long.append("15m volume expanded with bullish structure")
+        elif snapshots["15m"]["bearish"]:
+            short_score += 7
+            reasons_short.append("15m volume expanded with bearish structure")
+
+    if book >= 0.08:
+        long_score += 8
+        reasons_long.append("order book tilted to bids")
+    elif book <= -0.08:
+        short_score += 8
+        reasons_short.append("order book tilted to asks")
+
+    if delta >= 0.12:
+        long_score += 9
+        reasons_long.append("recent aggressive flow favors buyers")
+    elif delta <= -0.12:
+        short_score += 9
+        reasons_short.append("recent aggressive flow favors sellers")
+
+    # Same analyzer OI idea: rising OI only supports the active 15M direction.
+    # oi_change_pct() returns 0.0 on the first observation, so no first-sample
+    # bonus is accidentally awarded.
+    if oi > 0.05:
+        if snapshots["15m"]["bullish"]:
+            long_score += 5
+            reasons_long.append("open interest is rising with bullish structure")
+        elif snapshots["15m"]["bearish"]:
+            short_score += 5
+            reasons_short.append("open interest is rising with bearish structure")
+
+    net = long_score - short_score
+
+    if net >= 24:
+        direction = "LONG"
+        raw_score = long_score
+        reasons = reasons_long[:6]
+    elif net <= -24:
+        direction = "SHORT"
+        raw_score = short_score
+        reasons = reasons_short[:6]
+    else:
+        direction = "WAIT"
+        raw_score = max(long_score, short_score)
+        reasons = ["Signals are mixed; no clean directional edge"]
+
+    confidence = (
+        min(92, max(50, int(50 + raw_score * 0.42)))
+        if direction != "WAIT"
+        else min(69, max(45, int(45 + raw_score * 0.20)))
+    )
+
+    price = float(snapshots["15m"]["price"])
+    atr15 = float(snapshots["15m"]["atr"] or 0.0)
+    risk_dist = max(atr15 * 1.25, price * 0.0035)
+
+    if direction == "LONG":
+        side = "BUY"
+        sl = price - risk_dist
+        tp1 = price + risk_dist * 1.5
+        tp2 = price + risk_dist * 2.5
+    elif direction == "SHORT":
+        side = "SELL"
+        sl = price + risk_dist
+        tp1 = price - risk_dist * 1.5
+        tp2 = price - risk_dist * 2.5
+    else:
+        side = None
+        sl = None
+        tp1 = None
+        tp2 = None
+
+    def trend_name(tf):
+        snap = snapshots[tf]
+        if snap["bullish"]:
+            return "BULLISH"
+        if snap["bearish"]:
+            return "BEARISH"
+        return "MIXED"
+
+    return {
+        "direction": direction,
+        "side": side,
+        "confidence": confidence,
+        "raw_long": long_score,
+        "raw_short": short_score,
+        "net": net,
+        "price": price,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "risk_dist": risk_dist,
+        "risk_pct": (risk_dist / price) if price > 0 else 0.0,
+        "rr": 1.5,
+        "spread": spread,
+        "book": book,
+        "delta": delta,
+        "buy": buy,
+        "sell": sell,
+        "oi": oi,
+        "rsi_15m": r15,
+        "vol_ratio": vr,
+        "atr_15m_pct": (atr15 / price) if price > 0 else 0.0,
+        "trend_4h": trend_name("4h"),
+        "trend_1h": trend_name("1h"),
+        "trend_15m": trend_name("15m"),
+        "trend_5m": trend_name("5m"),
+        "reasons": reasons,
+    }
+
+
+# ============================================================
+# RAZA AI ANALYZER DEEP SCAN — DASHBOARD CONTRACT UNCHANGED
+# ============================================================
+
 def _deep_scan_one(item):
     _, symbol, lm, btc_regime = item
 
     try:
-        reg = regime_4h(symbol)
+        analysis = raza_ai_analyzer_decision(symbol)
+        direction = analysis["direction"]
+        q = int(analysis["confidence"])
 
-        if reg["regime"] == "SIDEWAYS":
+        if direction == "WAIT":
             return {
                 "symbol": symbol,
-                "blocked": "4H_SIDEWAYS",
-                "score": 0,
-                "lm": lm,
-                "error": None,
-            }
-
-        side = "BUY" if reg["regime"] == "BULL" else "SELL"
-
-        if not btc_market_allows(side, btc_regime):
-            return {
-                "symbol": symbol,
-                "blocked": "BTC_CONFLICT",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "error": None,
-            }
-
-        st = structure_1h(symbol)
-
-        structure_ok = (
-            (side == "BUY" and st["structure"] == "BULL_MOMENTUM")
-            or
-            (side == "SELL" and st["structure"] == "BEAR_MOMENTUM")
-        )
-
-        if not structure_ok:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "1H_STRUCTURE",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "error": None,
-            }
-
-        setup = liquidity_setup_15m(symbol, side)
-
-        if not setup["valid"]:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "15M_LIQUIDITY",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "error": None,
-            }
-
-        # Participation filter.
-        if setup["vol_ratio"] < MIN_VOL_RATIO:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "LOW_VOLUME",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "error": None,
-            }
-
-        trigger = entry_trigger_5m(symbol, side)
-
-        # V3: 5M is an execution-quality bonus, not a mandatory veto.
-        # Strong 4H/1H/15M + live microstructure can still qualify without it.
-
-        dm = depth_metrics(symbol)
-
-        if not dm:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "NO_ORDER_BOOK",
-                "score": 0,
-                "error": None,
-            }
-
-        spread, book = dm
-        delta, buy, sell = flow_metrics(symbol)
-        oi = oi_change_pct(symbol)
-
-        live_ok, live_reasons = live_confirmation(
-            side,
-            delta,
-            book,
-            spread,
-            oi,
-        )
-
-        q = quality_score(
-            side,
-            reg,
-            st,
-            setup,
-            trigger,
-            delta,
-            book,
-            spread,
-            oi,
-            btc_regime,
-        )
-
-        score_ok = q >= MIN_TRADE_SCORE
-        trade_ready = live_ok and score_ok
-        if not score_ok:
-            live_reasons = list(live_reasons) + ["QUALITY_SCORE"]
-
-        price = current_price(symbol)
-
-        risk = dynamic_risk(
-            price,
-            side,
-            setup,
-        )
-
-        if risk is None:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "RISK_TOO_WIDE",
+                "blocked": "ANALYZER_WAIT",
                 "score": q,
                 "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "trigger": trigger,
-                "delta": delta,
-                "book": book,
-                "spread": spread,
-                "oi": oi,
+                "delta": analysis["delta"],
+                "buy": analysis["buy"],
+                "sell": analysis["sell"],
+                "spread": analysis["spread"],
+                "book": analysis["book"],
+                "oi": analysis["oi"],
                 "error": None,
             }
+
+        side = analysis["side"]
+        score_ok = q >= MIN_TRADE_SCORE
+        trade_ready = bool(score_ok)
+
+        blocked_reasons = []
+        if not score_ok:
+            blocked_reasons.append("QUALITY_SCORE")
+
+        # Keep the existing dashboard/API field names exactly the same.
+        setup_15m = (
+            "ANALYZER_BULLISH"
+            if analysis["trend_15m"] == "BULLISH"
+            else "ANALYZER_BEARISH"
+            if analysis["trend_15m"] == "BEARISH"
+            else "ANALYZER_MIXED"
+        )
+        trigger_5m = (
+            "ANALYZER_BULLISH"
+            if analysis["trend_5m"] == "BULLISH"
+            else "ANALYZER_BEARISH"
+            if analysis["trend_5m"] == "BEARISH"
+            else "ANALYZER_MIXED"
+        )
 
         candidate = {
             "time_utc": datetime.now(timezone.utc).isoformat(),
@@ -2103,35 +2267,43 @@ def _deep_scan_one(item):
             "signal": side,
             "score": q,
             "risk_label": risk_label(q),
-            "price": price,
+            "price": analysis["price"],
 
-            "regime_4h": reg["regime"],
-            "structure_1h": st["structure"],
-            "setup_15m": setup["setup"],
-            "trigger_5m": trigger["trigger"],
+            "regime_4h": analysis["trend_4h"],
+            "structure_1h": analysis["trend_1h"],
+            "setup_15m": setup_15m,
+            "trigger_5m": trigger_5m,
 
-            "flow_delta": delta,
-            "buy_usd_60s": buy,
-            "sell_usd_60s": sell,
-            "spread_bps": spread,
-            "book_imb": book,
-            "oi_change_pct": oi,
+            "flow_delta": analysis["delta"],
+            "buy_usd_60s": analysis["buy"],
+            "sell_usd_60s": analysis["sell"],
+            "spread_bps": analysis["spread"],
+            "book_imb": analysis["book"],
+            "oi_change_pct": analysis["oi"],
 
-            "atr_15m_pct": setup["atr_pct"],
-            "vol_ratio": setup["vol_ratio"],
+            "atr_15m_pct": analysis["atr_15m_pct"],
+            "vol_ratio": analysis["vol_ratio"],
 
-            "risk_pct": risk["risk_pct"],
-            "rr": risk["rr"],
-            "tp": risk["tp"],
-            "sl": risk["sl"],
+            "risk_pct": analysis["risk_pct"],
+            "rr": analysis["rr"],
+            "tp": analysis["tp1"],
+            "tp2": analysis["tp2"],
+            "sl": analysis["sl"],
 
             "hard_confirm": trade_ready,
-            "blocked_reasons": live_reasons,
+            "blocked_reasons": blocked_reasons,
             "status": (
                 "TRADE READY"
                 if trade_ready
                 else "WAIT LIVE CONFIRMATION"
             ),
+
+            # Extra backend diagnostics; ignored by the existing dashboard.
+            "analyzer_direction": direction,
+            "analyzer_long_score": analysis["raw_long"],
+            "analyzer_short_score": analysis["raw_short"],
+            "analyzer_net": analysis["net"],
+            "analyzer_reasons": analysis["reasons"],
         }
 
         return {
@@ -2139,18 +2311,26 @@ def _deep_scan_one(item):
             "side": side,
             "score": q,
             "candidate": candidate,
-            "blocked": None if trade_ready else ("QUALITY_SCORE" if not score_ok else "LIVE_CONFIRM"),
+            "blocked": None if trade_ready else "QUALITY_SCORE",
             "lm": lm,
-            "regime": reg,
-            "structure": st,
-            "setup": setup,
-            "trigger": trigger,
-            "delta": delta,
-            "buy": buy,
-            "sell": sell,
-            "spread": spread,
-            "book": book,
-            "oi": oi,
+            "regime": {"regime": analysis["trend_4h"]},
+            "structure": {"structure": analysis["trend_1h"]},
+            "setup": {
+                "setup": setup_15m,
+                "valid": direction != "WAIT",
+                "atr_pct": analysis["atr_15m_pct"],
+                "vol_ratio": analysis["vol_ratio"],
+            },
+            "trigger": {
+                "trigger": trigger_5m,
+                "valid": analysis["trend_5m"] != "MIXED",
+            },
+            "delta": analysis["delta"],
+            "buy": analysis["buy"],
+            "sell": analysis["sell"],
+            "spread": analysis["spread"],
+            "book": analysis["book"],
+            "oi": analysis["oi"],
             "error": None,
         }
 
@@ -2168,11 +2348,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V2R3 BALANCED BITGET FUTURES SCAN START")
+    scan_log("RAZA V3 ANALYZER ENGINE BITGET FUTURES SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V2R3 scanning Top {TOP_COINS} Bitget Futures..."
+            f"V3 Analyzer scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
