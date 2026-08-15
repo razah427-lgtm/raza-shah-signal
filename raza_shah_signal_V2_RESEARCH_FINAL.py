@@ -40,9 +40,9 @@ from flask import (
 # -> PAPER SIGNAL
 # ============================================================
 
-STRATEGY_VERSION = "V7_LIQUIDITY_HUNTER_20260815"
-BUILD_VERSION = "V7_LIQUIDITY_TARGET_2_QUALITY_FREQ"
-REVERSAL_TEST_START_UTC = "2026-08-15T11:24:00+00:00"  # V7 liquidity-hunter clean forward-test start
+STRATEGY_VERSION = "V8_LOGIC_CONFIRMED_20260815"
+BUILD_VERSION = "V8_NO_SCORE_GATE_2_DEPLOY_MODULE_FIX"
+REVERSAL_TEST_START_UTC = "2026-08-15T14:58:00+00:00"  # V8 clean forward-test start; old versions remain archived
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -115,6 +115,10 @@ RSI_EXTREME_OVERBOUGHT = float(os.getenv("RSI_EXTREME_OVERBOUGHT", "80"))
 RSI_EXTREME_OVERSOLD = float(os.getenv("RSI_EXTREME_OVERSOLD", "20"))
 RSI_TURN_MIN = float(os.getenv("RSI_TURN_MIN", "1.00"))
 RSI_EXTREME_LOOKBACK = int(os.getenv("RSI_EXTREME_LOOKBACK", "3"))
+RSI_RECLAIM_REQUIRED = (
+    os.getenv("RSI_RECLAIM_REQUIRED", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 
 # V4 direction-quality controls.
 # Immediate reversal only: the PREVIOUS completed 15m RSI bar must itself be extreme.
@@ -198,10 +202,11 @@ SESSION_FILTER_ENABLED = False
 KSA_SESSION_START = int(os.getenv("KSA_SESSION_START", "15"))
 KSA_SESSION_END = int(os.getenv("KSA_SESSION_END", "22"))
 
-# Quality score is DISPLAY / RANKING ONLY.
-# It does NOT independently create a trade.
-MIN_TRADE_SCORE = int(os.getenv("MIN_TRADE_SCORE", "85"))
-STRONG_QUALITY_SCORE = int(os.getenv("STRONG_QUALITY_SCORE", "85"))
+# V8: quality score is diagnostic/display only. There is NO numeric entry gate.
+# A trade is created only when the full market/liquidity/trigger/live/risk logic confirms.
+SCORE_GATE_ENABLED = False
+MIN_TRADE_SCORE = 0          # compatibility only; never used as an entry veto
+STRONG_QUALITY_SCORE = 0     # compatibility only; removes the old 85+ dashboard gate
 
 # Paper tester
 TEST_START_CAPITAL = float(os.getenv("TEST_START_CAPITAL", "100"))
@@ -658,6 +663,86 @@ def top_symbols():
         f"RWA excluded={excluded_rwa} | status excluded={excluded_status}"
     )
     return symbols
+
+
+def _bitget_granularity(interval):
+    """Map internal timeframe labels to Bitget Futures candle granularity."""
+    mapping = {
+        "1m": "1m",
+        "3m": "3m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1H",
+        "2h": "2H",
+        "4h": "4H",
+        "6h": "6H",
+        "12h": "12H",
+        "1d": "1D",
+    }
+    return mapping.get(str(interval), str(interval))
+
+
+def klines(symbol, interval="5m", limit=100):
+    """Fetch recent Bitget USDT-M market candles.
+
+    Bitget's /api/v2/mix/market/candles endpoint supports up to 1000 rows.
+    We keep the requested size bounded because the strategy only needs a
+    compact recent window.
+    """
+    safe_limit = max(2, min(int(limit or 100), 1000))
+    data = bitget_get(
+        "/api/v2/mix/market/candles",
+        {
+            "symbol": symbol,
+            "productType": BITGET_PRODUCT_TYPE,
+            "granularity": _bitget_granularity(interval),
+            "limit": str(safe_limit),
+        },
+    )
+
+    if not isinstance(data, list):
+        return []
+
+    rows = []
+    for row in data:
+        if not isinstance(row, (list, tuple)) or len(row) < 7:
+            continue
+        try:
+            int(row[0])
+            rows.append(row)
+        except Exception:
+            continue
+
+    return sorted(rows, key=lambda x: int(x[0]))
+
+
+def candle_dicts(symbol, interval, limit=100, drop_live=True):
+    """Return normalized OHLCV dictionaries for completed candles."""
+    rows = klines(symbol, interval, limit)
+    out = []
+
+    for x in rows:
+        try:
+            out.append({
+                "ts": int(x[0]),
+                "open": float(x[1]),
+                "high": float(x[2]),
+                "low": float(x[3]),
+                "close": float(x[4]),
+                "base_volume": float(x[5]),
+                "quote_volume": float(x[6]),
+            })
+        except Exception:
+            continue
+
+    # Bitget's latest market candle may still be forming. Strategy decisions
+    # use completed bars only, so remove the newest bar when enough data exists.
+    if drop_live and len(out) >= 3:
+        out = out[:-1]
+
+    return out
+
 
 def current_price(symbol):
     data = bitget_get(
@@ -1837,13 +1922,9 @@ def quality_score(
 
 
 def risk_label(score):
-    if score >= 90:
-        return "A+"
-    if score >= STRONG_QUALITY_SCORE:
-        return "STRONG"
-    if score >= 75:
-        return "GOOD"
-    return "VALID"
+    # V8 does not classify trades by 75/85/90 score bands.
+    # The score remains visible for research only; entry quality comes from hard logic.
+    return "LOGIC CONFIRMED" if float(score or 0) > 0 else "WAIT"
 
 # ============================================================
 # V3 LIVE MICROSTRUCTURE CONFIRMATION
@@ -2133,7 +2214,7 @@ def add_open_trade(row):
     Research audit-safe trade insert.
 
     Important:
-    - Current STRATEGY_VERSION creates a clean V6 forward-test bucket.
+    - Current STRATEGY_VERSION creates a clean V8 forward-test bucket.
     - The complete entry context is written in the SAME database INSERT as
       the trade itself and is immediately read back for verification.
     - A PostgreSQL advisory transaction lock prevents two Render workers /
@@ -2409,35 +2490,17 @@ def performance():
 
 def legacy_trade_summary(limit=20):
     """
-    Dashboard-only history of CLOSED trades from older strategy versions.
-    These rows are NEVER mixed into V6 performance/capital statistics.
+    V8 dashboard compatibility only.
+    Older strategy rows remain safely archived in PostgreSQL, but they are intentionally
+    hidden from the live dashboard and are never mixed with the new-logic forward test.
     """
-    rows = trade_rows(v2_only=False)
-
-    legacy = [
-        dict(r)
-        for r in rows
-        if (
-            str(r.get("strategy_version") or "") != STRATEGY_VERSION
-            and str(r.get("status") or "").upper() in ("WIN", "LOSS")
-        )
-    ]
-
-    legacy.sort(
-        key=lambda r: str(r.get("closed_time_utc") or r.get("time_utc") or ""),
-        reverse=True,
-    )
-
-    items = legacy[:max(1, int(limit))]
-    wins = sum(1 for r in legacy if str(r.get("status") or "").upper() == "WIN")
-    losses = sum(1 for r in legacy if str(r.get("status") or "").upper() == "LOSS")
-
     return {
-        "total_closed": len(legacy),
-        "wins": wins,
-        "losses": losses,
-        "items": items,
-        "note": "Legacy history only. Not counted in V6 performance or capital.",
+        "total_closed": 0,
+        "wins": 0,
+        "losses": 0,
+        "items": [],
+        "archived": True,
+        "note": "Older strategy records are archived and hidden from the V8 dashboard.",
     }
 
 
@@ -2456,82 +2519,38 @@ def forming_performance():
         "total_profit": 0.0,
         "total_loss": 0.0,
         "net_pl": 0.0,
-        "note": "V2R3 measures performance only after a fully validated trade entry.",
+        "note": "V8 measures performance only after a fully logic-confirmed trade entry.",
     }
 
 
 def score_performance():
+    """
+    V8 compatibility summary. The old 75/85/90 score bands are removed.
+    Every closed V8 trade entered through the same full logic-confirmation gate.
+    """
     rows = [
         r for r in trade_rows(v2_only=True)
         if r.get("status") in ("WIN", "LOSS")
     ]
-
-    buckets_def = [
-        (0, 74, "VALID <75"),
-        (75, 84, "GOOD 75-84"),
-        (85, 89, "STRONG 85-89"),
-        (90, None, "A+ 90+"),
-    ]
-
-    buckets = []
-
-    for low, high, label in buckets_def:
-        selected = []
-
-        for r in rows:
-            try:
-                sc = float(r.get("score") or 0)
-            except Exception:
-                continue
-
-            if sc < low:
-                continue
-
-            if high is not None and sc > high:
-                continue
-
-            selected.append(r)
-
-        wins = sum(
-            1 for r in selected
-            if r.get("status") == "WIN"
-        )
-        losses = sum(
-            1 for r in selected
-            if r.get("status") == "LOSS"
-        )
-        total = wins + losses
-
-        buckets.append({
-            "range": label,
-            "closed": total,
-            "wins": wins,
-            "losses": losses,
-            "win_rate": (
-                round((wins / total) * 100, 2)
-                if total
-                else 0.0
-            ),
-        })
-
+    wins = sum(1 for r in rows if r.get("status") == "WIN")
+    losses = sum(1 for r in rows if r.get("status") == "LOSS")
+    total = wins + losses
+    logic_bucket = {
+        "range": "NEW LOGIC",
+        "closed": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round((wins / total) * 100, 2) if total else 0.0,
+    }
     return {
         "strategy_version": STRATEGY_VERSION,
-        "closed_total": len(rows),
+        "closed_total": total,
         "exact": [],
-        "buckets": buckets,
+        "buckets": [logic_bucket],
         "best_exact": None,
-        "best_bucket": (
-            max(
-                [x for x in buckets if x["closed"] >= 5],
-                key=lambda x: (x["win_rate"], x["closed"]),
-            )
-            if any(x["closed"] >= 5 for x in buckets)
-            else None
-        ),
-        "note": (
-            "V2R3 score is a quality/ranking metric only. "
-            "Market logic creates the trade."
-        ),
+        "best_bucket": logic_bucket if total >= 5 else None,
+        "score_gate_enabled": False,
+        "note": "V8 uses full logic confirmation; numeric score bands are not entry rules.",
     }
 
 
@@ -2574,7 +2593,7 @@ def capital_summary():
             else 0.0
         ),
         "closed_trades_today": len(rows),
-        "source": "V6 RESEARCH FLOW MOMENTUM + ACTIVE TP/SL MANAGER",
+        "source": "V8 FULL LOGIC CONFIRMATION + ACTIVE TP/SL MANAGER",
         "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
@@ -3870,13 +3889,13 @@ def _deep_scan_one(item):
         if not trigger.get("valid"): return {"symbol":symbol,"side":side,"blocked":"5M_TRIGGER_WAIT","score":0,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"spread":spread,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
         live_ok,live_reasons=research_live_confirmation(side,delta,book,spread,oi,whale.get("whale_delta",0.0),flow_persist)
         q=liquidity_hunter_quality_score(side,reg,st,setup,trigger,delta,book,spread,oi,whale,flow_persist,liq_map,liq_persist,btc_regime)
-        score_ok=q>=MIN_TRADE_SCORE; trade_ready=live_ok and score_ok and liq_persist.get("persistent")
-        if not score_ok: live_reasons=list(live_reasons)+["QUALITY_SCORE"]
+        # V8: NO numeric score gate. Full logic confirmation is the entry gate.
+        trade_ready=bool(live_ok and liq_persist.get("persistent"))
         risk=liquidity_hunter_risk(price,side,setup,liq_map,heat=heat,whale=whale)
         if risk is None: return {"symbol":symbol,"side":side,"blocked":"LIQUIDITY_TARGET_RR_NO_ROOM","score":q,"setup":setup,"trigger":trigger,"liquidity_map":liq_map,"error":None}
         selected=(liq_map.get("up") if side=="BUY" else liq_map.get("down")) or {}
         candidate={"time_utc":datetime.now(timezone.utc).isoformat(),"strategy_version":STRATEGY_VERSION,"build_version":BUILD_VERSION,"exchange":"BITGET","data_source":"Bitget crypto-only USDT-M Futures","symbol":symbol,"signal":side,"score":q,"risk_label":risk_label(q),"price":price,"research_mode":"LIQUIDITY_STOP_POOL_HUNTER","direction_basis":direction_basis,"regime_4h":reg.get("regime","SIDEWAYS"),"structure_1h":st.get("structure","RANGE"),"structure_1h_strength":st.get("strength"),"setup_15m":setup.get("setup","NONE"),"trigger_5m":trigger.get("trigger","WAIT"),"trigger_choch":trigger.get("choch",False),"rsi_15m":round(float(rsi15),2),"reversal_reason":"RSI_CONTEXT_ONLY","sweep_penetration_pct":setup.get("sweep_penetration_pct",0.0),"liquidity_target_price":float(selected.get("price") or 0),"liquidity_target_score":float(selected.get("score") or 0),"liquidity_target_kind":selected.get("kind"),"liquidity_target_distance_pct":float(selected.get("distance_pct") or 0),"liquidity_up_score":float(liq_map.get("up_score") or 0),"liquidity_down_score":float(liq_map.get("down_score") or 0),"liquidity_dominance_ratio":float(liq_map.get("dominance_ratio") or 0),"liquidity_dominance_gap":float(liq_map.get("dominance_gap") or 0),"liquidity_persistence_samples":liq_persist.get("samples",0),"liquidity_persistence_aligned":liq_persist.get("aligned",0),"liquidity_persistence_required":liq_persist.get("required",LIQ_TARGET_PERSIST_REQUIRED),"liquidity_persistent":liq_persist.get("persistent",False),"flow_delta":delta,"buy_usd_60s":buy,"sell_usd_60s":sell,"spread_bps":spread,"book_imb":book,"oi_change_pct":oi,"flow_persistence_samples":flow_persist.get("samples",0),"flow_persistence_aligned":flow_persist.get("aligned",0),"flow_persistence_required":flow_persist.get("required",FLOW_PERSIST_REQUIRED),"flow_persistent":flow_persist.get("persistent",False),"avg_flow_dir":flow_persist.get("avg_flow_dir",0.0),"avg_book_dir":flow_persist.get("avg_book_dir",0.0),"btc_regime":str((btc_regime or {}).get("regime") or "SIDEWAYS"),"atr_15m_pct":setup["atr_pct"],"vol_ratio":setup["vol_ratio"],"risk_pct":risk["risk_pct"],"capital_risk_pct":risk.get("capital_risk_pct",CAPITAL_RISK_PER_TRADE),"effective_leverage":risk.get("effective_leverage",0.0),"position_notional":risk.get("position_notional",0.0),"rr":risk["rr"],"tp":risk["tp"],"sl":risk["sl"],"tp_source":risk.get("tp_source"),"sl_source":risk.get("sl_source"),"whale_delta":risk.get("whale_delta",whale.get("whale_delta",0.0)),"bid_wall_price":risk.get("bid_wall_price",0.0),"ask_wall_price":risk.get("ask_wall_price",0.0),"bid_wall_ratio":risk.get("bid_wall_ratio",0.0),"ask_wall_ratio":risk.get("ask_wall_ratio",0.0),"hard_confirm":trade_ready,"blocked_reasons":live_reasons,"status":"TRADE READY" if trade_ready else "WAIT LIVE CONFIRMATION"}
-        return {"symbol":symbol,"side":side,"score":q,"candidate":candidate,"blocked":None if trade_ready else ("QUALITY_SCORE" if not score_ok else "LIVE_CONFIRM"),"lm":lm,"regime":reg,"structure":st,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
+        return {"symbol":symbol,"side":side,"score":q,"candidate":candidate,"blocked":None if trade_ready else "LIVE_CONFIRM","lm":lm,"regime":reg,"structure":st,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
     except Exception as e:
         return {"symbol":symbol,"error":f"{type(e).__name__}: {e}"}
 
@@ -3888,11 +3907,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V7 QUALITY + FREQUENCY LIQUIDITY SCAN START")
+    scan_log("RAZA V8 FULL-LOGIC LIQUIDITY SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V7 liquidity-hunter scanning Top {TOP_COINS} crypto futures..."
+            f"V8 full-logic scanning Top {TOP_COINS} crypto futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -4078,9 +4097,29 @@ def scan_once():
             "light_skip_reasons": dict(light_skips),
             "light_errors": len(light_errors),
             "deep_planned": min(len(light_candidates), DEEP_CHECK),
-            "quality_gate": MIN_TRADE_SCORE,
+            "quality_gate": 0,
+            "score_gate_enabled": False,
+            "entry_gate": "FULL_LOGIC_CONFIRMATION",
             "build_version": BUILD_VERSION,
         }
+
+    # Never report a backend/data failure as a genuine market NO_SETUP.
+    if not light_candidates and light_errors:
+        with state_lock:
+            state["best_candidate"] = None
+            state["alerts_last_scan"] = 0
+            state["last_scan"] = datetime.now(timezone.utc).isoformat()
+            state["last_scan_seconds"] = round(time.time() - scan_start, 2)
+            state["status"] = (
+                f"V7 LIGHT DATA ERROR — {len(light_errors)}/{len(symbols)} symbols failed"
+            )
+            state["last_error"] = " | ".join(light_errors[:3])
+        save_state_snapshot()
+        scan_log(
+            f"V7 LIGHT DATA ERROR: {len(light_errors)}/{len(symbols)} | "
+            f"first={light_errors[0] if light_errors else 'unknown'}"
+        )
+        return
 
     # ----------------------------
     # DEEP SCAN
@@ -4576,7 +4615,7 @@ def scanner_loop():
         f"Current-strategy history: "
         f"{p['total_trades']} trades\n"
         f"Winning: {p['win_rate']:.2f}%\n\n"
-        f"Trade score gate: {MIN_TRADE_SCORE}+ after market confirmation.\n"
+        f"Trade score gate: OFF — full logic confirmation only.\n"
         f"🔗 {APP_URL}"
     )
 
@@ -4734,8 +4773,9 @@ def api_status():
         TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
     )
 
-    # Frontend compatibility:
-    x["min_score"] = STRONG_QUALITY_SCORE
+    # Frontend compatibility: old numeric 85+ gate is disabled in V8.
+    x["min_score"] = 0
+    x["score_gate_enabled"] = False
 
     x["performance"] = performance()
     x["forming_performance"] = forming_performance()
@@ -4743,7 +4783,7 @@ def api_status():
     x["forming_history"] = []
     x["capital_summary"] = capital_summary()
     x["trade_audit"] = recent_trade_audit(20)
-    x["legacy_trades"] = legacy_trade_summary(20)
+    x["legacy_trades"] = []  # V8 dashboard: legacy rows hidden/archived
     x["active_build_marker"] = f"{STRATEGY_VERSION} | {BUILD_VERSION}"
     x["signal_generator"] = x.get("signal_generator") or {"action": "WAIT", "reason": "NO_SETUP"}
     x["research_watchlist"] = x.get("research_watchlist") or {"long": [], "short": []}
@@ -4762,13 +4802,14 @@ def api_status():
             "net-RR TP → active BE/trailing/reversal protection"
         ),
         "risk_rules": {
-            "score_role": "QUALITY ONLY",
+            "score_role": "DISPLAY / RESEARCH ONLY — NO ENTRY GATE",
             "research_flow_mode": "ON",
             "crypto_only_filter": CRYPTO_ONLY_FILTER,
             "htf_conflict_filter": HTF_CONFLICT_FILTER_ENABLED,
             "trade_ready": (
-                f"All V2R1 hard filters must pass and score must be >= {MIN_TRADE_SCORE}. "
-                "Score alone cannot create a trade."
+                "Trade requires liquidity dominance + persistence, HTF support, "
+                "15m path setup, 5m trigger, live flow/book/OI confirmation and valid risk/RR. "
+                "Numeric score does not block or create a trade."
             ),
             "rr_target": RR_TARGET,
             "max_stop_pct": MAX_STOP_PCT * 100,
