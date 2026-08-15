@@ -25,7 +25,7 @@ from flask import (
 )
 
 # ============================================================
-# RAZA SHAH SIGNAL — V3 FINAL RESEARCH LOGIC
+# RAZA SHAH SIGNAL — V3 SMART MONEY TP/SL
 # BITGET USDT-M FUTURES
 # SIGNAL ONLY — NO AUTO ORDERS
 #
@@ -41,7 +41,7 @@ from flask import (
 # ============================================================
 
 STRATEGY_VERSION = "V2R2_RESEARCH_STABLE"
-BUILD_VERSION = "V3_ANALYZER_ENGINE"
+BUILD_VERSION = "V3_SMART_MONEY_TPSL"
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -83,10 +83,25 @@ SWEEP_BUFFER_PCT = float(os.getenv("SWEEP_BUFFER_PCT", "0.0015"))
 RETEST_DISTANCE_PCT = float(os.getenv("RETEST_DISTANCE_PCT", "0.0075"))
 
 # Dynamic risk
-RR_TARGET = float(os.getenv("RR_TARGET", "1.50"))
+RR_TARGET = float(os.getenv("RR_TARGET", "1.80"))
 MIN_STOP_PCT = float(os.getenv("MIN_STOP_PCT", "0.0040"))  # 0.40%
 MAX_STOP_PCT = float(os.getenv("MAX_STOP_PCT", "0.0100"))  # 1.00%
 ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULT", "1.10"))
+
+# Smart Money / order-book heat TP-SL layer.
+# This uses public-market proxies (liquidity walls + aggressive large prints);
+# it does not claim to identify a real-world whale wallet or guarantee an order is genuine.
+SMART_MIN_RR = float(os.getenv("SMART_MIN_RR", "1.25"))
+SMART_MAX_RR = float(os.getenv("SMART_MAX_RR", "2.40"))
+SMART_STRONG_RR = float(os.getenv("SMART_STRONG_RR", "2.20"))
+SMART_WEAK_RR = float(os.getenv("SMART_WEAK_RR", "1.55"))
+SMART_ATR_BUFFER_MULT = float(os.getenv("SMART_ATR_BUFFER_MULT", "0.15"))
+SMART_PRICE_BUFFER_PCT = float(os.getenv("SMART_PRICE_BUFFER_PCT", "0.0004"))
+ORDERBOOK_WALL_MIN_RATIO = float(os.getenv("ORDERBOOK_WALL_MIN_RATIO", "3.0"))
+ORDERBOOK_HEAT_MAX_DIST_PCT = float(os.getenv("ORDERBOOK_HEAT_MAX_DIST_PCT", "0.025"))
+ORDERBOOK_SL_WALL_MAX_DIST_PCT = float(os.getenv("ORDERBOOK_SL_WALL_MAX_DIST_PCT", "0.012"))
+WHALE_TRADE_MIN_USD = float(os.getenv("WHALE_TRADE_MIN_USD", "5000"))
+WHALE_TRADE_MEDIAN_MULT = float(os.getenv("WHALE_TRADE_MEDIAN_MULT", "5.0"))
 
 # BTC market regime is CONTEXT ONLY in V2R1.
 # It is recorded and scored, but it never hard-rejects an otherwise valid altcoin setup.
@@ -830,6 +845,11 @@ def liquidity_setup_15m(symbol, side):
     prior_high = max(x["high"] for x in recent)
     prior_low = min(x["low"] for x in recent)
 
+    # Wider external-liquidity pool used only for smart TP placement.
+    external = c[-55:-3]
+    external_high = max(x["high"] for x in external)
+    external_low = min(x["low"] for x in external)
+
     rng = max(last["high"] - last["low"], 1e-12)
     close_loc = (last["close"] - last["low"]) / rng
     lower_wick = min(last["open"], last["close"]) - last["low"]
@@ -904,6 +924,8 @@ def liquidity_setup_15m(symbol, side):
         "price": price,
         "prior_high": prior_high,
         "prior_low": prior_low,
+        "external_high": external_high,
+        "external_low": external_low,
         "liquidity_level": liquidity_level,
         "sweep_extreme": sweep_extreme,
         "ema20": e20,
@@ -966,54 +988,128 @@ def raw_order_book(symbol, limit=100):
     return data if isinstance(data, dict) else {}
 
 
-def depth_metrics(symbol, limit=100):
-    data = raw_order_book(symbol, limit)
+def _median_value(values):
+    vals = sorted(float(v) for v in values if float(v) > 0)
+    if not vals:
+        return 0.0
+    n = len(vals)
+    m = n // 2
+    if n % 2:
+        return vals[m]
+    return (vals[m - 1] + vals[m]) / 2.0
 
-    bids = data.get("bids", [])
-    asks = data.get("asks", [])
 
-    if not bids or not asks:
+def _strongest_book_wall(levels, mid, is_bid):
+    """Return the strongest nearby resting-liquidity wall as a market proxy."""
+    rows = []
+
+    for price, qty in levels:
+        try:
+            px = float(price)
+            q = float(qty)
+            if px <= 0 or q <= 0 or mid <= 0:
+                continue
+
+            dist_pct = abs(px - mid) / mid
+            if dist_pct > ORDERBOOK_HEAT_MAX_DIST_PCT:
+                continue
+
+            # A bid wall must sit below/at mid; an ask wall above/at mid.
+            if is_bid and px > mid:
+                continue
+            if (not is_bid) and px < mid:
+                continue
+
+            usd = px * q
+            rows.append((px, q, usd, dist_pct))
+        except Exception:
+            continue
+
+    if not rows:
         return None
 
-    best_bid = float(bids[0][0])
-    best_ask = float(asks[0][0])
-    mid = (best_bid + best_ask) / 2
+    median_usd = _median_value([r[2] for r in rows])
+    if median_usd <= 0:
+        return None
 
-    spread_bps = (
-        ((best_ask - best_bid) / mid) * 10000
-        if mid
-        else 999.0
-    )
+    candidates = []
+    for px, q, usd, dist_pct in rows:
+        ratio = usd / median_usd
+        if ratio < ORDERBOOK_WALL_MIN_RATIO:
+            continue
 
-    # Use top part of book instead of letting far-away orders dominate.
-    bids = bids[:30]
-    asks = asks[:30]
+        # Favor genuinely large walls but slightly penalize far-away levels.
+        proximity = max(0.15, 1.0 - (dist_pct / max(ORDERBOOK_HEAT_MAX_DIST_PCT, 1e-9)))
+        score = min(ratio, 20.0) * proximity
+        candidates.append((score, px, q, usd, dist_pct, ratio))
 
-    bid_usd = sum(
-        float(price) * float(qty)
-        for price, qty in bids
-    )
+    if not candidates:
+        return None
 
-    ask_usd = sum(
-        float(price) * float(qty)
-        for price, qty in asks
-    )
+    _, px, q, usd, dist_pct, ratio = max(candidates, key=lambda x: x[0])
+    return {
+        "price": px,
+        "qty": q,
+        "usd": usd,
+        "distance_pct": dist_pct,
+        "ratio_to_median": ratio,
+    }
 
+
+def orderbook_heat_metrics(symbol, limit=100):
+    data = raw_order_book(symbol, limit)
+
+    bids_raw = data.get("bids", [])
+    asks_raw = data.get("asks", [])
+
+    if not bids_raw or not asks_raw:
+        return None
+
+    best_bid = float(bids_raw[0][0])
+    best_ask = float(asks_raw[0][0])
+    mid = (best_bid + best_ask) / 2.0
+
+    if mid <= 0:
+        return None
+
+    spread_bps = ((best_ask - best_bid) / mid) * 10000.0
+
+    # Keep the same top-of-book behavior used by the approved build.
+    bids = bids_raw[:30]
+    asks = asks_raw[:30]
+
+    bid_usd = sum(float(price) * float(qty) for price, qty in bids)
+    ask_usd = sum(float(price) * float(qty) for price, qty in asks)
     total = bid_usd + ask_usd
+    book_imb = ((bid_usd - ask_usd) / total) if total else 0.0
 
-    book_imb = (
-        (bid_usd - ask_usd) / total
-        if total
-        else 0.0
-    )
+    # Heat walls scan a wider slice of the public book, still capped by distance.
+    bid_wall = _strongest_book_wall(bids_raw[:80], mid, True)
+    ask_wall = _strongest_book_wall(asks_raw[:80], mid, False)
 
-    return spread_bps, book_imb
+    return {
+        "spread_bps": spread_bps,
+        "book_imb": book_imb,
+        "mid": mid,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "bid_wall": bid_wall,
+        "ask_wall": ask_wall,
+    }
+
+
+def depth_metrics(symbol, limit=100):
+    """Backward-compatible tuple for existing dashboard/API code."""
+    heat = orderbook_heat_metrics(symbol, limit)
+    if not heat:
+        return None
+    return heat["spread_bps"], heat["book_imb"]
 
 # ============================================================
 # AGGRESSIVE TRADE FLOW
 # ============================================================
 
-def flow_metrics(symbol):
+def flow_metrics_detailed(symbol):
     trades = bitget_get(
         "/api/v2/mix/market/fills",
         {
@@ -1027,48 +1123,67 @@ def flow_metrics(symbol):
         trades = []
 
     cutoff = int(time.time() * 1000) - 60000
-
     buy = 0.0
     sell = 0.0
+    prints = []
 
     for t in trades:
         try:
-            trade_time = int(
-                t.get("ts")
-                or t.get("timestamp")
-                or 0
-            )
-
+            trade_time = int(t.get("ts") or t.get("timestamp") or 0)
             if trade_time < cutoff:
                 continue
 
             price = float(t.get("price") or 0)
-            qty = float(
-                t.get("size")
-                or t.get("qty")
-                or 0
-            )
-
+            qty = float(t.get("size") or t.get("qty") or 0)
             usd = price * qty
             side = str(t.get("side") or "").lower()
 
+            if usd <= 0 or side not in ("buy", "sell"):
+                continue
+
+            prints.append((side, usd))
+
             if side == "buy":
                 buy += usd
-            elif side == "sell":
+            else:
                 sell += usd
-
         except Exception:
             pass
 
     total = buy + sell
+    delta = ((buy - sell) / total) if total else 0.0
 
-    delta = (
-        (buy - sell) / total
-        if total
-        else 0.0
+    median_print = _median_value([usd for _, usd in prints])
+    whale_threshold = max(
+        WHALE_TRADE_MIN_USD,
+        median_print * WHALE_TRADE_MEDIAN_MULT,
     )
 
-    return delta, buy, sell
+    whale_buy = sum(usd for s, usd in prints if s == "buy" and usd >= whale_threshold)
+    whale_sell = sum(usd for s, usd in prints if s == "sell" and usd >= whale_threshold)
+    whale_total = whale_buy + whale_sell
+    whale_delta = ((whale_buy - whale_sell) / whale_total) if whale_total else 0.0
+
+    largest_buy = max((usd for s, usd in prints if s == "buy"), default=0.0)
+    largest_sell = max((usd for s, usd in prints if s == "sell"), default=0.0)
+
+    return {
+        "delta": delta,
+        "buy": buy,
+        "sell": sell,
+        "whale_delta": whale_delta,
+        "whale_buy": whale_buy,
+        "whale_sell": whale_sell,
+        "whale_threshold": whale_threshold,
+        "largest_buy": largest_buy,
+        "largest_sell": largest_sell,
+    }
+
+
+def flow_metrics(symbol):
+    """Backward-compatible aggregate flow tuple."""
+    m = flow_metrics_detailed(symbol)
+    return m["delta"], m["buy"], m["sell"]
 
 # ============================================================
 # OPEN INTEREST CHANGE
@@ -1180,47 +1295,194 @@ def btc_context_points(side, btc_regime):
 # V2 DYNAMIC RISK
 # ============================================================
 
-def dynamic_risk(entry, side, setup):
+def dynamic_risk(entry, side, setup, heat=None, whale=None):
+    """
+    Smart TP/SL model:
+    - SL sits beyond SMC invalidation (sweep/structure) with an ATR buffer.
+    - A strong same-side order-book wall can widen the invalidation point, but
+      only when it is close enough and still inside MAX_STOP_PCT.
+    - TP is pulled toward the first meaningful opposing liquidity pool/wall.
+    - Strong aligned large-print flow + book pressure can extend RR; weak flow
+      reduces RR. Static walls are treated as proxies because they can be pulled.
+    """
     atr15 = float(setup.get("atr") or 0)
     extreme = float(setup.get("sweep_extreme") or entry)
 
     if entry <= 0 or atr15 <= 0:
         return None
 
+    heat = heat or {}
+    whale = whale or {}
+
     atr_dist = ATR_STOP_MULT * atr15
+    buffer_dist = max(
+        SMART_ATR_BUFFER_MULT * atr15,
+        entry * SMART_PRICE_BUFFER_PCT,
+    )
 
+    bid_wall = heat.get("bid_wall") or {}
+    ask_wall = heat.get("ask_wall") or {}
+
+    # ----------------------------
+    # SMART-MONEY INVALIDATION SL
+    # ----------------------------
     if side == "BUY":
-        structural_dist = max(0.0, entry - extreme)
-    else:
-        structural_dist = max(0.0, extreme - entry)
+        structural_sl = min(
+            extreme - buffer_dist,
+            entry - atr_dist,
+        )
+        sl = structural_sl
 
-    raw_dist = max(atr_dist, structural_dist)
+        wall_px = float(bid_wall.get("price") or 0)
+        wall_ratio = float(bid_wall.get("ratio_to_median") or 0)
+        wall_dist = float(bid_wall.get("distance_pct") or 999)
+
+        if (
+            wall_px > 0
+            and wall_px < entry
+            and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO
+            and wall_dist <= ORDERBOOK_SL_WALL_MAX_DIST_PCT
+        ):
+            wall_sl = wall_px - buffer_dist
+            wall_risk_pct = (entry - wall_sl) / entry
+            if 0 < wall_risk_pct <= MAX_STOP_PCT:
+                sl = min(sl, wall_sl)
+
+        raw_dist = entry - sl
+
+    else:
+        structural_sl = max(
+            extreme + buffer_dist,
+            entry + atr_dist,
+        )
+        sl = structural_sl
+
+        wall_px = float(ask_wall.get("price") or 0)
+        wall_ratio = float(ask_wall.get("ratio_to_median") or 0)
+        wall_dist = float(ask_wall.get("distance_pct") or 999)
+
+        if (
+            wall_px > entry
+            and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO
+            and wall_dist <= ORDERBOOK_SL_WALL_MAX_DIST_PCT
+        ):
+            wall_sl = wall_px + buffer_dist
+            wall_risk_pct = (wall_sl - entry) / entry
+            if 0 < wall_risk_pct <= MAX_STOP_PCT:
+                sl = max(sl, wall_sl)
+
+        raw_dist = sl - entry
+
     raw_pct = raw_dist / entry
 
-    # Reject setups requiring an excessively wide structural stop.
     if raw_pct > MAX_STOP_PCT:
         return None
 
+    # Preserve the approved minimum stop floor.
     risk_pct = max(raw_pct, MIN_STOP_PCT)
-
     if risk_pct > MAX_STOP_PCT:
         return None
 
     risk_dist = entry * risk_pct
-
     if side == "BUY":
         sl = entry - risk_dist
-        tp = entry + risk_dist * RR_TARGET
     else:
         sl = entry + risk_dist
-        tp = entry - risk_dist * RR_TARGET
+
+    # ----------------------------
+    # WHALE / HEAT ADAPTIVE RR
+    # ----------------------------
+    book_dir = float(heat.get("book_imb") or 0)
+    whale_dir = float(whale.get("whale_delta") or 0)
+    if side == "SELL":
+        book_dir = -book_dir
+        whale_dir = -whale_dir
+
+    target_rr = RR_TARGET
+
+    if whale_dir >= 0.25 and book_dir >= 0.15:
+        target_rr = max(target_rr, SMART_STRONG_RR)
+    elif whale_dir <= -0.15 or book_dir <= -0.10:
+        target_rr = min(target_rr, SMART_WEAK_RR)
+
+    target_rr = min(SMART_MAX_RR, max(SMART_MIN_RR, target_rr))
+
+    if side == "BUY":
+        base_tp = entry + (risk_dist * target_rr)
+    else:
+        base_tp = entry - (risk_dist * target_rr)
+
+    # ----------------------------
+    # SMC + OPPOSING HEAT TP
+    # ----------------------------
+    liquidity_candidates = []
+
+    if side == "BUY":
+        for key in ("prior_high", "external_high"):
+            level = float(setup.get(key) or 0)
+            if level > entry:
+                liquidity_candidates.append((level, f"SMC_{key.upper()}"))
+
+        wall_px = float(ask_wall.get("price") or 0)
+        wall_ratio = float(ask_wall.get("ratio_to_median") or 0)
+        if wall_px > entry and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO:
+            liquidity_candidates.append((wall_px, "ORDERBOOK_ASK_WALL"))
+
+        tp = base_tp
+        tp_source = "ADAPTIVE_RR"
+
+        for level, source in sorted(liquidity_candidates, key=lambda x: x[0]):
+            # Exit just before visible opposing liquidity rather than inside it.
+            candidate_tp = level - max(buffer_dist * 0.35, entry * 0.0002)
+            rr = (candidate_tp - entry) / risk_dist
+            if rr >= SMART_MIN_RR and candidate_tp < tp:
+                tp = candidate_tp
+                tp_source = source
+                break
+
+        effective_rr = (tp - entry) / risk_dist
+
+    else:
+        for key in ("prior_low", "external_low"):
+            level = float(setup.get(key) or 0)
+            if 0 < level < entry:
+                liquidity_candidates.append((level, f"SMC_{key.upper()}"))
+
+        wall_px = float(bid_wall.get("price") or 0)
+        wall_ratio = float(bid_wall.get("ratio_to_median") or 0)
+        if 0 < wall_px < entry and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO:
+            liquidity_candidates.append((wall_px, "ORDERBOOK_BID_WALL"))
+
+        tp = base_tp
+        tp_source = "ADAPTIVE_RR"
+
+        for level, source in sorted(liquidity_candidates, key=lambda x: x[0], reverse=True):
+            candidate_tp = level + max(buffer_dist * 0.35, entry * 0.0002)
+            rr = (entry - candidate_tp) / risk_dist
+            if rr >= SMART_MIN_RR and candidate_tp > tp:
+                tp = candidate_tp
+                tp_source = source
+                break
+
+        effective_rr = (entry - tp) / risk_dist
+
+    if effective_rr < SMART_MIN_RR:
+        return None
 
     return {
         "risk_pct": risk_pct,
         "risk_dist": risk_dist,
         "sl": sl,
         "tp": tp,
-        "rr": RR_TARGET,
+        "rr": effective_rr,
+        "target_rr": target_rr,
+        "tp_source": tp_source,
+        "sl_source": "SMC_STRUCTURE_PLUS_HEAT",
+        "whale_delta": float(whale.get("whale_delta") or 0),
+        "bid_wall_price": float(bid_wall.get("price") or 0),
+        "ask_wall_price": float(ask_wall.get("price") or 0),
+        "bid_wall_ratio": float(bid_wall.get("ratio_to_median") or 0),
+        "ask_wall_ratio": float(ask_wall.get("ratio_to_median") or 0),
     }
 
 # ============================================================
@@ -1946,317 +2208,159 @@ def _light_scan_one(symbol):
 # V2 DEEP SCAN
 # ============================================================
 
-def analyzer_timeframe_snapshot(symbol, interval):
-    """RAZA AI ANALYZER V2 timeframe logic, adapted to the scanner.
-
-    Important: the original analyzer scores the current/live candle.  We keep
-    that behaviour here so the automated scanner and the standalone analyzer
-    make the same directional decision from the same market state.
-    """
-    candles = candle_dicts(symbol, interval, 200, drop_live=False)
-
-    if len(candles) < 60:
-        raise RuntimeError(f"Not enough {interval} candles for {symbol}")
-
-    closes = [c["close"] for c in candles]
-    volumes = [c["base_volume"] for c in candles]
-
-    e20 = ema(closes, 20)
-    e50 = ema(closes, 50)
-    e200 = ema(closes, 200)
-    last = closes[-1]
-
-    prior_volumes = volumes[-21:-1] if len(volumes) > 21 else volumes[:-1]
-    base_volume = (
-        sum(prior_volumes) / len(prior_volumes)
-        if prior_volumes
-        else (volumes[-1] if volumes else 0.0)
-    )
-    volume_ratio_now = volumes[-1] / max(base_volume, 1e-12)
-
-    return {
-        "price": last,
-        "ema20": e20,
-        "ema50": e50,
-        "ema200": e200,
-        "rsi": rsi(closes, 14),
-        "volume_ratio": volume_ratio_now,
-        "atr": atr_value(candles, 14),
-        "bullish": last > e20 > e50,
-        "bearish": last < e20 < e50,
-    }
-
-
-def analyzer_orderbook_metrics(symbol):
-    """Same 50-level notional imbalance used by RAZA AI ANALYZER V2."""
-    data = raw_order_book(symbol, 50)
-
-    if not isinstance(data, dict):
-        return {"imbalance": 0.0, "spread_bps": 999.0}
-
-    bids = data.get("bids") or []
-    asks = data.get("asks") or []
-
-    if not bids or not asks:
-        return {"imbalance": 0.0, "spread_bps": 999.0}
-
-    bid_notional = 0.0
-    ask_notional = 0.0
-
-    for row in bids:
-        try:
-            bid_notional += float(row[0]) * float(row[1])
-        except Exception:
-            pass
-
-    for row in asks:
-        try:
-            ask_notional += float(row[0]) * float(row[1])
-        except Exception:
-            pass
-
-    total = bid_notional + ask_notional
-    imbalance = (
-        (bid_notional - ask_notional) / total
-        if total
-        else 0.0
-    )
-
-    try:
-        best_bid = float(bids[0][0])
-        best_ask = float(asks[0][0])
-        mid = (best_bid + best_ask) / 2.0
-        spread_bps = (
-            ((best_ask - best_bid) / mid) * 10000.0
-            if mid
-            else 999.0
-        )
-    except Exception:
-        spread_bps = 999.0
-
-    return {
-        "imbalance": imbalance,
-        "spread_bps": spread_bps,
-    }
-
-
-def raza_ai_analyzer_decision(symbol):
-    """Exact RAZA AI ANALYZER V2 scoring adapted for auto-scanning.
-
-    Direction weights:
-      4H 24, 1H 20, 15M 16, 5M 8
-    Extras:
-      15M RSI 8, 15M volume 7, order book 8, flow 9, rising OI 5
-    LONG/SHORT requires a 24-point directional edge.  Confidence uses the
-    same analyzer conversion.  The existing RAZA SHAH SIGNAL 85+ gate is
-    preserved outside this function so the dashboard and alert policy remain
-    unchanged.
-    """
-    snapshots = {
-        tf: analyzer_timeframe_snapshot(symbol, tf)
-        for tf in ("5m", "15m", "1h", "4h")
-    }
-
-    book_data = analyzer_orderbook_metrics(symbol)
-    spread = float(book_data.get("spread_bps") or 999.0)
-    book = float(book_data.get("imbalance") or 0.0)
-
-    delta, buy, sell = flow_metrics(symbol)
-    oi = oi_change_pct(symbol)
-
-    long_score = 0
-    short_score = 0
-    reasons_long = []
-    reasons_short = []
-
-    weights = {
-        "4h": 24,
-        "1h": 20,
-        "15m": 16,
-        "5m": 8,
-    }
-
-    for tf, weight in weights.items():
-        snap = snapshots[tf]
-        if snap["bullish"]:
-            long_score += weight
-            reasons_long.append(f"{tf} trend bullish")
-        elif snap["bearish"]:
-            short_score += weight
-            reasons_short.append(f"{tf} trend bearish")
-
-    r15 = float(snapshots["15m"]["rsi"])
-    if 52 <= r15 <= 72:
-        long_score += 8
-        reasons_long.append("15m momentum supports buyers")
-    elif 28 <= r15 <= 48:
-        short_score += 8
-        reasons_short.append("15m momentum supports sellers")
-
-    vr = float(snapshots["15m"]["volume_ratio"])
-    if vr >= 1.15:
-        if snapshots["15m"]["bullish"]:
-            long_score += 7
-            reasons_long.append("15m volume expanded with bullish structure")
-        elif snapshots["15m"]["bearish"]:
-            short_score += 7
-            reasons_short.append("15m volume expanded with bearish structure")
-
-    if book >= 0.08:
-        long_score += 8
-        reasons_long.append("order book tilted to bids")
-    elif book <= -0.08:
-        short_score += 8
-        reasons_short.append("order book tilted to asks")
-
-    if delta >= 0.12:
-        long_score += 9
-        reasons_long.append("recent aggressive flow favors buyers")
-    elif delta <= -0.12:
-        short_score += 9
-        reasons_short.append("recent aggressive flow favors sellers")
-
-    # Same analyzer OI idea: rising OI only supports the active 15M direction.
-    # oi_change_pct() returns 0.0 on the first observation, so no first-sample
-    # bonus is accidentally awarded.
-    if oi > 0.05:
-        if snapshots["15m"]["bullish"]:
-            long_score += 5
-            reasons_long.append("open interest is rising with bullish structure")
-        elif snapshots["15m"]["bearish"]:
-            short_score += 5
-            reasons_short.append("open interest is rising with bearish structure")
-
-    net = long_score - short_score
-
-    if net >= 24:
-        direction = "LONG"
-        raw_score = long_score
-        reasons = reasons_long[:6]
-    elif net <= -24:
-        direction = "SHORT"
-        raw_score = short_score
-        reasons = reasons_short[:6]
-    else:
-        direction = "WAIT"
-        raw_score = max(long_score, short_score)
-        reasons = ["Signals are mixed; no clean directional edge"]
-
-    confidence = (
-        min(92, max(50, int(50 + raw_score * 0.42)))
-        if direction != "WAIT"
-        else min(69, max(45, int(45 + raw_score * 0.20)))
-    )
-
-    price = float(snapshots["15m"]["price"])
-    atr15 = float(snapshots["15m"]["atr"] or 0.0)
-    risk_dist = max(atr15 * 1.25, price * 0.0035)
-
-    if direction == "LONG":
-        side = "BUY"
-        sl = price - risk_dist
-        tp1 = price + risk_dist * 1.5
-        tp2 = price + risk_dist * 2.5
-    elif direction == "SHORT":
-        side = "SELL"
-        sl = price + risk_dist
-        tp1 = price - risk_dist * 1.5
-        tp2 = price - risk_dist * 2.5
-    else:
-        side = None
-        sl = None
-        tp1 = None
-        tp2 = None
-
-    def trend_name(tf):
-        snap = snapshots[tf]
-        if snap["bullish"]:
-            return "BULLISH"
-        if snap["bearish"]:
-            return "BEARISH"
-        return "MIXED"
-
-    return {
-        "direction": direction,
-        "side": side,
-        "confidence": confidence,
-        "raw_long": long_score,
-        "raw_short": short_score,
-        "net": net,
-        "price": price,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "risk_dist": risk_dist,
-        "risk_pct": (risk_dist / price) if price > 0 else 0.0,
-        "rr": 1.5,
-        "spread": spread,
-        "book": book,
-        "delta": delta,
-        "buy": buy,
-        "sell": sell,
-        "oi": oi,
-        "rsi_15m": r15,
-        "vol_ratio": vr,
-        "atr_15m_pct": (atr15 / price) if price > 0 else 0.0,
-        "trend_4h": trend_name("4h"),
-        "trend_1h": trend_name("1h"),
-        "trend_15m": trend_name("15m"),
-        "trend_5m": trend_name("5m"),
-        "reasons": reasons,
-    }
-
-
-# ============================================================
-# RAZA AI ANALYZER DEEP SCAN — DASHBOARD CONTRACT UNCHANGED
-# ============================================================
-
 def _deep_scan_one(item):
     _, symbol, lm, btc_regime = item
 
     try:
-        analysis = raza_ai_analyzer_decision(symbol)
-        direction = analysis["direction"]
-        q = int(analysis["confidence"])
+        reg = regime_4h(symbol)
 
-        if direction == "WAIT":
+        if reg["regime"] == "SIDEWAYS":
             return {
                 "symbol": symbol,
-                "blocked": "ANALYZER_WAIT",
-                "score": q,
+                "blocked": "4H_SIDEWAYS",
+                "score": 0,
                 "lm": lm,
-                "delta": analysis["delta"],
-                "buy": analysis["buy"],
-                "sell": analysis["sell"],
-                "spread": analysis["spread"],
-                "book": analysis["book"],
-                "oi": analysis["oi"],
                 "error": None,
             }
 
-        side = analysis["side"]
+        side = "BUY" if reg["regime"] == "BULL" else "SELL"
+
+        if not btc_market_allows(side, btc_regime):
+            return {
+                "symbol": symbol,
+                "blocked": "BTC_CONFLICT",
+                "score": 0,
+                "lm": lm,
+                "regime": reg,
+                "error": None,
+            }
+
+        st = structure_1h(symbol)
+
+        structure_ok = (
+            (side == "BUY" and st["structure"] == "BULL_MOMENTUM")
+            or
+            (side == "SELL" and st["structure"] == "BEAR_MOMENTUM")
+        )
+
+        if not structure_ok:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "1H_STRUCTURE",
+                "score": 0,
+                "lm": lm,
+                "regime": reg,
+                "structure": st,
+                "error": None,
+            }
+
+        setup = liquidity_setup_15m(symbol, side)
+
+        if not setup["valid"]:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "15M_LIQUIDITY",
+                "score": 0,
+                "lm": lm,
+                "regime": reg,
+                "structure": st,
+                "setup": setup,
+                "error": None,
+            }
+
+        # Participation filter.
+        if setup["vol_ratio"] < MIN_VOL_RATIO:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "LOW_VOLUME",
+                "score": 0,
+                "lm": lm,
+                "regime": reg,
+                "structure": st,
+                "setup": setup,
+                "error": None,
+            }
+
+        trigger = entry_trigger_5m(symbol, side)
+
+        # V3: 5M is an execution-quality bonus, not a mandatory veto.
+        # Strong 4H/1H/15M + live microstructure can still qualify without it.
+
+        heat = orderbook_heat_metrics(symbol)
+
+        if not heat:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "NO_ORDER_BOOK",
+                "score": 0,
+                "error": None,
+            }
+
+        spread = heat["spread_bps"]
+        book = heat["book_imb"]
+        whale = flow_metrics_detailed(symbol)
+        delta = whale["delta"]
+        buy = whale["buy"]
+        sell = whale["sell"]
+        oi = oi_change_pct(symbol)
+
+        live_ok, live_reasons = live_confirmation(
+            side,
+            delta,
+            book,
+            spread,
+            oi,
+        )
+
+        q = quality_score(
+            side,
+            reg,
+            st,
+            setup,
+            trigger,
+            delta,
+            book,
+            spread,
+            oi,
+            btc_regime,
+        )
+
         score_ok = q >= MIN_TRADE_SCORE
-        trade_ready = bool(score_ok)
-
-        blocked_reasons = []
+        trade_ready = live_ok and score_ok
         if not score_ok:
-            blocked_reasons.append("QUALITY_SCORE")
+            live_reasons = list(live_reasons) + ["QUALITY_SCORE"]
 
-        # Keep the existing dashboard/API field names exactly the same.
-        setup_15m = (
-            "ANALYZER_BULLISH"
-            if analysis["trend_15m"] == "BULLISH"
-            else "ANALYZER_BEARISH"
-            if analysis["trend_15m"] == "BEARISH"
-            else "ANALYZER_MIXED"
+        price = current_price(symbol)
+
+        risk = dynamic_risk(
+            price,
+            side,
+            setup,
+            heat=heat,
+            whale=whale,
         )
-        trigger_5m = (
-            "ANALYZER_BULLISH"
-            if analysis["trend_5m"] == "BULLISH"
-            else "ANALYZER_BEARISH"
-            if analysis["trend_5m"] == "BEARISH"
-            else "ANALYZER_MIXED"
-        )
+
+        if risk is None:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "SMART_RISK_NO_ROOM",
+                "score": q,
+                "lm": lm,
+                "regime": reg,
+                "structure": st,
+                "setup": setup,
+                "trigger": trigger,
+                "delta": delta,
+                "book": book,
+                "spread": spread,
+                "oi": oi,
+                "error": None,
+            }
 
         candidate = {
             "time_utc": datetime.now(timezone.utc).isoformat(),
@@ -2267,43 +2371,42 @@ def _deep_scan_one(item):
             "signal": side,
             "score": q,
             "risk_label": risk_label(q),
-            "price": analysis["price"],
+            "price": price,
 
-            "regime_4h": analysis["trend_4h"],
-            "structure_1h": analysis["trend_1h"],
-            "setup_15m": setup_15m,
-            "trigger_5m": trigger_5m,
+            "regime_4h": reg["regime"],
+            "structure_1h": st["structure"],
+            "setup_15m": setup["setup"],
+            "trigger_5m": trigger["trigger"],
 
-            "flow_delta": analysis["delta"],
-            "buy_usd_60s": analysis["buy"],
-            "sell_usd_60s": analysis["sell"],
-            "spread_bps": analysis["spread"],
-            "book_imb": analysis["book"],
-            "oi_change_pct": analysis["oi"],
+            "flow_delta": delta,
+            "buy_usd_60s": buy,
+            "sell_usd_60s": sell,
+            "spread_bps": spread,
+            "book_imb": book,
+            "oi_change_pct": oi,
 
-            "atr_15m_pct": analysis["atr_15m_pct"],
-            "vol_ratio": analysis["vol_ratio"],
+            "atr_15m_pct": setup["atr_pct"],
+            "vol_ratio": setup["vol_ratio"],
 
-            "risk_pct": analysis["risk_pct"],
-            "rr": analysis["rr"],
-            "tp": analysis["tp1"],
-            "tp2": analysis["tp2"],
-            "sl": analysis["sl"],
+            "risk_pct": risk["risk_pct"],
+            "rr": risk["rr"],
+            "tp": risk["tp"],
+            "sl": risk["sl"],
+            "tp_source": risk.get("tp_source"),
+            "sl_source": risk.get("sl_source"),
+            "whale_delta": risk.get("whale_delta", 0.0),
+            "bid_wall_price": risk.get("bid_wall_price", 0.0),
+            "ask_wall_price": risk.get("ask_wall_price", 0.0),
+            "bid_wall_ratio": risk.get("bid_wall_ratio", 0.0),
+            "ask_wall_ratio": risk.get("ask_wall_ratio", 0.0),
 
             "hard_confirm": trade_ready,
-            "blocked_reasons": blocked_reasons,
+            "blocked_reasons": live_reasons,
             "status": (
                 "TRADE READY"
                 if trade_ready
                 else "WAIT LIVE CONFIRMATION"
             ),
-
-            # Extra backend diagnostics; ignored by the existing dashboard.
-            "analyzer_direction": direction,
-            "analyzer_long_score": analysis["raw_long"],
-            "analyzer_short_score": analysis["raw_short"],
-            "analyzer_net": analysis["net"],
-            "analyzer_reasons": analysis["reasons"],
         }
 
         return {
@@ -2311,26 +2414,18 @@ def _deep_scan_one(item):
             "side": side,
             "score": q,
             "candidate": candidate,
-            "blocked": None if trade_ready else "QUALITY_SCORE",
+            "blocked": None if trade_ready else ("QUALITY_SCORE" if not score_ok else "LIVE_CONFIRM"),
             "lm": lm,
-            "regime": {"regime": analysis["trend_4h"]},
-            "structure": {"structure": analysis["trend_1h"]},
-            "setup": {
-                "setup": setup_15m,
-                "valid": direction != "WAIT",
-                "atr_pct": analysis["atr_15m_pct"],
-                "vol_ratio": analysis["vol_ratio"],
-            },
-            "trigger": {
-                "trigger": trigger_5m,
-                "valid": analysis["trend_5m"] != "MIXED",
-            },
-            "delta": analysis["delta"],
-            "buy": analysis["buy"],
-            "sell": analysis["sell"],
-            "spread": analysis["spread"],
-            "book": analysis["book"],
-            "oi": analysis["oi"],
+            "regime": reg,
+            "structure": st,
+            "setup": setup,
+            "trigger": trigger,
+            "delta": delta,
+            "buy": buy,
+            "sell": sell,
+            "spread": spread,
+            "book": book,
+            "oi": oi,
             "error": None,
         }
 
@@ -2348,11 +2443,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V3 ANALYZER ENGINE BITGET FUTURES SCAN START")
+    scan_log("RAZA V2R3 BALANCED BITGET FUTURES SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V3 Analyzer scanning Top {TOP_COINS} Bitget Futures..."
+            f"V2R3 scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
