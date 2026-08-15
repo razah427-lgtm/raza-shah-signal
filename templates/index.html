@@ -35,6 +35,12 @@
 <div class="app">
   <div class="top"><div class="brand">⚡ RAZA SHAH SIGNAL</div><div class="live" id="live">● CONNECTING</div></div>
   <div class="warning">⚠️ Trading involves significant risk. All signals are provided for informational purposes only. Always assess your own risk before entering a trade. No profit or performance is guaranteed.</div>
+  <div class="card" style="margin-bottom:10px;display:grid;grid-template-columns:1.4fr .8fr .8fr 1.2fr;gap:8px;align-items:center">
+    <div><div class="lab">Active Research Build</div><div class="metricVal good" id="buildMarker">—</div></div>
+    <div><div class="lab">Generator</div><div class="metricVal" id="genAction">WAIT</div></div>
+    <div><div class="lab">Flow Persistence</div><div class="metricVal" id="genPersist">0/0</div></div>
+    <div><div class="lab">Decision / Block</div><div class="metricVal yellow" id="genReason">STARTING</div></div>
+  </div>
 
   <div class="statusGrid">
     <div class="card"><div class="lab">Scanner Status</div><div class="statusVal good" id="scannerLive">LIVE</div><div class="muted">Scanning Top Coins</div></div>
@@ -47,7 +53,7 @@
 
   <div class="mainGrid">
     <div class="card">
-      <div class="sectionTitle">🎯 CURRENT BEST SETUP (LIVE)</div>
+      <div class="sectionTitle">🧠 RESEARCH SIGNAL GENERATOR (LIVE)</div>
       <div class="setupTop">
         <div class="coin" id="coin">SCANNING...</div>
         <div class="sideBadge" id="sideBadge">WAIT</div>
@@ -69,6 +75,8 @@
         <div class="metric"><div class="lab">Order Book</div><div class="metricVal" id="book">—</div></div>
         <div class="metric"><div class="lab">OI Change</div><div class="metricVal" id="oi">—</div></div>
         <div class="metric"><div class="lab">Hard Confirmation</div><div class="metricVal yellow" id="hardConfirm">—</div></div>
+        <div class="metric"><div class="lab">Research Mode</div><div class="metricVal" id="researchMode">—</div></div>
+        <div class="metric"><div class="lab">Flow Persistence</div><div class="metricVal" id="flowPersist">—</div></div>
       </div>
     </div>
 
@@ -108,8 +116,8 @@
   </div>
 
   <div class="watchGrid">
-    <div class="card"><div class="sectionTitle good">🟢 TOP OVERSOLD — LONG CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>15m</th><th>1H</th><th>4H</th><th>Score</th><th>Liquidity</th><th>Setup</th><th>Risk</th></tr></thead><tbody id="longTable"></tbody></table></div><div class="watchGraph" id="longGraph"></div></div>
-    <div class="card"><div class="sectionTitle bad">🔴 TOP OVERBOUGHT — SHORT CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>15m</th><th>1H</th><th>4H</th><th>Score</th><th>Liquidity</th><th>Setup</th><th>Risk</th></tr></thead><tbody id="shortTable"></tbody></table></div><div class="watchGraph" id="shortGraph"></div></div>
+    <div class="card"><div class="sectionTitle good">🟢 TOP MOMENTUM — LONG CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>Bias</th><th>RSI15</th><th>Rank</th><th>Volume</th><th>ATR%</th><th>Slope%</th><th>State</th></tr></thead><tbody id="longTable"></tbody></table></div><div class="watchGraph" id="longGraph"></div></div>
+    <div class="card"><div class="sectionTitle bad">🔴 TOP MOMENTUM — SHORT CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>Bias</th><th>RSI15</th><th>Rank</th><th>Volume</th><th>ATR%</th><th>Slope%</th><th>State</th></tr></thead><tbody id="shortTable"></tbody></table></div><div class="watchGraph" id="shortGraph"></div></div>
   </div>
 
   <div class="perfGrid">
@@ -185,8 +193,55 @@
     </div>
   </div>
 
+
+  <div class="card history" id="auditMainCard">
+    <div class="sectionTitle purple">🧪 V6 RESEARCH RESULT — FLOW / DIRECTION / ACTIVE RISK</div>
+
+    <div class="perfInner" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
+      <div class="perfTile"><div class="lab">Active Build</div><div class="perfValue" id="auditBuild" style="font-size:13px">WAITING V6</div></div>
+      <div class="perfTile"><div class="lab">Closed</div><div class="perfValue" id="auditClosed">0</div></div>
+      <div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="auditWins">0</div></div>
+      <div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="auditLosses">0</div></div>
+      <div class="perfTile"><div class="lab">Win Rate</div><div class="perfValue good" id="auditWinRate">0.00%</div></div>
+      <div class="perfTile"><div class="lab">Main Problem</div><div class="perfValue yellow" id="auditMainProblem" style="font-size:13px">NEED NEW TRADES</div></div>
+    </div>
+
+    <div class="perfInner" style="grid-template-columns:repeat(5,1fr);margin-bottom:10px">
+      <div class="perfTile"><div class="lab">Straight To SL</div><div class="perfValue bad" id="auditStraight">0</div></div>
+      <div class="perfTile"><div class="lab">Profit Then Reversed</div><div class="perfValue yellow" id="auditReversed">0</div></div>
+      <div class="perfTile"><div class="lab">Weak Flow</div><div class="perfValue" id="auditWeakFlow">0</div></div>
+      <div class="perfTile"><div class="lab">Weak Book</div><div class="perfValue" id="auditWeakBook">0</div></div>
+      <div class="perfTile"><div class="lab">HTF Conflict</div><div class="perfValue bad" id="auditHtf">0</div></div>
+    </div>
+
+    <div class="perfInner" style="grid-template-columns:repeat(5,1fr);margin-bottom:10px">
+      <div class="perfTile"><div class="lab">Profit Factor</div><div class="perfValue good" id="auditPF">0.00</div></div>
+      <div class="perfTile"><div class="lab">Expectancy / Trade</div><div class="perfValue" id="auditExpectancy">$0.00</div></div>
+      <div class="perfTile"><div class="lab">Avg Win</div><div class="perfValue good" id="auditAvgWin">$0.00</div></div>
+      <div class="perfTile"><div class="lab">Avg Loss</div><div class="perfValue bad" id="auditAvgLoss">$0.00</div></div>
+      <div class="perfTile"><div class="lab">Open</div><div class="perfValue yellow" id="auditOpen">0</div></div>
+    </div>
+
+    <div class="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Coin</th><th>Side</th><th>Result</th><th>Score</th>
+            <th>MFE</th><th>MAE</th><th>SL Risk</th><th>Diagnosis</th>
+          </tr>
+        </thead>
+        <tbody id="auditTable">
+          <tr><td colspan="8">Waiting for V6 research-flow trades...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="muted" style="font-size:9px;margin-top:8px">
+      This section uses only the active V6 research-flow strategy bucket. Older strategy trades remain preserved but are not counted here.
+    </div>
+  </div>
+
   <div class="card history">
-    <div class="sectionTitle yellow">💰 DAILY CAPITAL SUMMARY — 20X</div>
+    <div class="sectionTitle yellow">💰 DAILY CAPITAL SUMMARY — RISK MANAGED</div>
     <div class="perfInner" style="grid-template-columns:repeat(6,1fr)">
       <div class="perfTile"><div class="lab">Starting Capital</div><div class="perfValue">$<span id="capStart">100.00</span></div></div>
       <div class="perfTile"><div class="lab">Daily Profit</div><div class="perfValue good">$<span id="capProfit">0.00</span></div></div>
@@ -225,14 +280,27 @@ loadChart("BTCUSDT");
 function clock(){ $("ksaTime").textContent=new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Riyadh",hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date()) }
 setInterval(clock,1000);clock();
 
-function showBest(c){
+function showBest(c,gen){
   currentBest=c;
-  if(!c)return;
+  if(!c){
+    $("coin").textContent=(gen&&gen.symbol)||"WAIT";
+    $("sideBadge").textContent=(gen&&gen.action)||"WAIT";
+    $("sideBadge").className="sideBadge";
+    $("score").textContent=(gen&&gen.score)||0;
+    $("scoreFill").style.width="0%";
+    $("setupText").textContent=(gen&&gen.reason)||"No research setup ready";
+    $("hardConfirm").textContent="NOT YET";
+    $("researchMode").textContent=(gen&&gen.research_mode)||"HTF FLOW MOMENTUM";
+    $("flowPersist").textContent=(gen&&gen.flow_persistence)||"0/0";
+    return;
+  }
   const sc=Number(c.score||0),buy=String(c.signal).toUpperCase()==="BUY",hard=c.hard_confirm===true||String(c.hard_confirm).toLowerCase()==="true",ready=sc>=85&&hard,r=c.risk_label||risk(sc);
   $("coin").textContent=c.symbol||"—";$("sideBadge").textContent=buy?(ready?"BUY / LONG":"LONG FORMING"):(ready?"SELL / SHORT":"SHORT FORMING");$("sideBadge").className="sideBadge "+(buy?"sideLong":"sideShort");
   $("riskBadge").textContent="RISK LEVEL: "+r+(r==="STRONG"?" ●":"");$("riskBadge").className="riskBadge "+riskClass(r);$("score").textContent=sc;$("scoreFill").style.width=Math.min(100,Math.max(0,sc))+"%";
   $("setupText").textContent=ready?"TRADE READY — hard confirmation passed":"Watching for confirmation...";$("entry").textContent=fmt(c.price);$("tp").textContent=fmt(c.tp);$("sl").textContent=fmt(c.sl);$("trend").textContent=c.trend_5m==="BULL"?"BULLISH":c.trend_5m==="BEAR"?"BEARISH":"—";
   $("hardConfirm").textContent=hard?"YES ✅":"NOT YET";$("hardConfirm").className="metricVal "+(hard?"good":"yellow");
+  $("researchMode").textContent=c.research_mode||"HTF FLOW MOMENTUM";
+  $("flowPersist").textContent=String(c.flow_persistence_aligned||0)+"/"+String(c.flow_persistence_required||0);
   const e=N(c.price),tp=N(c.tp),sl=N(c.sl);$("rr").textContent=(e!==null&&tp!==null&&sl!==null&&Math.abs(e-sl)>0)?"1 : "+(Math.abs(tp-e)/Math.abs(e-sl)).toFixed(2):"—";
   loadChart(c.symbol);
 }
@@ -262,11 +330,25 @@ function heatmap(longs,shorts){
   const all=[...(longs||[]),...(shorts||[])].filter(x=>Number.isFinite(Number(x.rsi_15m)));
   if(!all.length){$("avgRsi").textContent="AVG RSI: —";return}
   $("avgRsi").textContent="AVG RSI: "+(all.reduce((a,x)=>a+Number(x.rsi_15m),0)/all.length).toFixed(2);
-  all.forEach((x,i)=>{const r=Math.max(5,Math.min(95,Number(x.rsi_15m))),el=document.createElement("div"),isLong=x.rsi_bias==="BUY";el.className="heatDot "+(isLong?"longDot":"shortDot");el.style.left=(6+(i%10)*9.5)+"%";el.style.top=((100-r))+"%";el.innerHTML=`<span>${String(x.symbol||"").replace("USDT","")}</span><i></i>`;map.appendChild(el)});
+  all.forEach((x,i)=>{const r=Math.max(5,Math.min(95,Number(x.rsi_15m))),el=document.createElement("div"),isLong=String(x.bias||x.rsi_bias).toUpperCase()==="BUY";el.className="heatDot "+(isLong?"longDot":"shortDot");el.style.left=(6+(i%10)*9.5)+"%";el.style.top=((100-r))+"%";el.innerHTML=`<span>${String(x.symbol||"").replace("USDT","")}</span><i></i>`;map.appendChild(el)});
 }
 
 function liqText(x){const b=Number(x.book_imb||0);return b>=.20?"HIGH BUY":b>=.05?"MED BUY":b<=-.20?"HIGH SELL":b<=-.05?"MED SELL":"MIXED"}
-function table(id,rows,longSide){rows=rows||[];$(id).innerHTML=rows.length?rows.slice(0,10).map((x,i)=>{const r=x.risk_label||risk(x.score),setup=Number(x.score)>=85?(longSide?"LONG READY":"SHORT READY"):(longSide?"LONG FORMING":"SHORT FORMING"),lt=liqText(x);return `<tr><td>${i+1}</td><td><b>${x.symbol||"—"}</b></td><td>${fmt(x.rsi_15m,1)}</td><td>${fmt(x.rsi_1h,1)}</td><td>${fmt(x.rsi_4h,1)}</td><td>${fmt(x.score,0)}</td><td class="${lt.includes("BUY")?"good":lt.includes("SELL")?"bad":"yellow"}">${lt}</td><td class="${longSide?"good":"bad"}">${setup}</td><td><span class="riskPill ${riskClass(r)}">${r}</span></td></tr>`}).join(""):`<tr><td colspan="9">Waiting for live candidates...</td></tr>`}
+function table(id,rows,longSide){
+  rows=rows||[];
+  $(id).innerHTML=rows.length?rows.slice(0,10).map((x,i)=>{
+    const bias=String(x.bias||"WAIT").toUpperCase();
+    const cls=bias==="BUY"?"good":bias==="SELL"?"bad":"yellow";
+    return `<tr>
+      <td>${i+1}</td><td><b>${x.symbol||"—"}</b></td>
+      <td class="${cls}">${bias}</td>
+      <td>${fmt(x.rsi_15m,1)}</td><td>${fmt(x.rank,1)}</td>
+      <td>${fmt(x.vol_ratio_15m,2)}x</td><td>${fmt(x.atr_15m_pct,3)}</td>
+      <td>${fmt(x.ema20_slope_15m,4)}</td>
+      <td class="${cls}">${bias===(longSide?"BUY":"SELL")?"WATCH":"WAIT"}</td>
+    </tr>`;
+  }).join(""):`<tr><td colspan="9">Waiting for momentum candidates...</td></tr>`;
+}
 function graph(id,rows,longSide){const vals=(rows||[]).map(x=>Number(x.rsi_15m)).filter(Number.isFinite);if(!vals.length){$(id).innerHTML="";return}const W=650,H=85,p=8,pts=vals.map((v,i)=>`${p+(W-2*p)*(i/Math.max(1,vals.length-1))},${H-p-(H-2*p)*((Math.max(20,Math.min(80,v))-20)/60)}`).join(" "),c=longSide?"#42ef8d":"#ff525f";$(id).innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="#385348" stroke-dasharray="5 5"/><polyline points="${pts}" fill="none" stroke="${c}" stroke-width="3"/></svg>`}
 
 function history(rows){rows=rows||[];$("historyTable").innerHTML=rows.length?rows.slice(0,10).map(x=>`<tr><td>${x.time_utc?new Date(x.time_utc).toLocaleString():"—"}</td><td><b>${x.symbol||"—"}</b></td><td class="${String(x.signal).toUpperCase()==="BUY"?"good":"bad"}">${String(x.signal).toUpperCase()==="BUY"?"LONG":"SHORT"}</td><td>${fmt(x.score,0)}</td><td>${fmt(x.price)}</td><td class="good">${fmt(x.tp)}</td><td class="bad">${fmt(x.sl)}</td></tr>`).join(""):`<tr><td colspan="7">No verified 85+ trades yet.</td></tr>`}
@@ -322,6 +404,81 @@ function scorePerformance(sp){
     : `<tr><td colspan="5">No closed score data yet.</td></tr>`;
 }
 
+
+function auditMain(d){
+  const items=Array.isArray(d.trade_audit)?d.trade_audit:[];
+  const p=d.performance||{};
+  const build=d.active_build_marker
+    || ((d.strategy_version||"")+" | "+(d.build_version||""));
+
+  $("auditBuild").textContent=build||"WAITING V6";
+  $("auditClosed").textContent=Number(p.total_trades||0);
+  $("auditWins").textContent=Number(p.wins||0);
+  $("auditLosses").textContent=Number(p.losses||0);
+  $("auditWinRate").textContent=Number(p.win_rate||0).toFixed(2)+"%";
+  $("auditPF").textContent=Number(p.profit_factor||0).toFixed(2);
+  const ex=Number(p.expectancy||0),aw=Number(p.avg_win||0),al=Number(p.avg_loss||0);
+  $("auditExpectancy").textContent=(ex>=0?"+$":"-$")+Math.abs(ex).toFixed(2);$("auditExpectancy").className="perfValue "+(ex>=0?"good":"bad");
+  $("auditAvgWin").textContent="$"+aw.toFixed(2);
+  $("auditAvgLoss").textContent="$"+al.toFixed(2);
+  $("auditOpen").textContent=Number(p.open_trades||0);
+
+  const counts={};
+  const closed=items.filter(x=>["WIN","LOSS"].includes(String(x.status||"").toUpperCase()));
+
+  closed.forEach(x=>{
+    const reasons=((x.diagnosis||{}).reasons||[]);
+    reasons.forEach(r=>counts[r]=(counts[r]||0)+1);
+  });
+
+  const straight=counts.STRAIGHT_TO_SL||0;
+  const reversed=counts.PROFIT_THEN_REVERSED||0;
+  const weakFlow=counts.WEAK_ENTRY_FLOW||0;
+  const weakBook=counts.WEAK_ENTRY_BOOK||0;
+  const htf=(counts.SELL_AGAINST_4H_BULL||0)
+          +(counts.BUY_AGAINST_4H_BEAR||0)
+          +(counts.SELL_AGAINST_1H_BULL||0)
+          +(counts.BUY_AGAINST_1H_BEAR||0);
+
+  $("auditStraight").textContent=straight;
+  $("auditReversed").textContent=reversed;
+  $("auditWeakFlow").textContent=weakFlow;
+  $("auditWeakBook").textContent=weakBook;
+  $("auditHtf").textContent=htf;
+
+  const problemCandidates=[
+    ["STRAIGHT TO SL",straight],
+    ["PROFIT THEN REVERSED",reversed],
+    ["WEAK ENTRY FLOW",weakFlow],
+    ["WEAK ORDER BOOK",weakBook],
+    ["HTF DIRECTION CONFLICT",htf]
+  ].sort((a,b)=>b[1]-a[1]);
+
+  $("auditMainProblem").textContent=
+    problemCandidates[0][1]>0 ? problemCandidates[0][0] :
+    (closed.length ? "NORMAL / MIXED" : "NEED NEW V6 TRADES");
+
+  $("auditTable").innerHTML=items.length
+    ? items.slice(0,12).map(x=>{
+        const dg=x.diagnosis||{};
+        const rs=(dg.reasons||[]).join(", ")||"—";
+        const st=String(x.status||"OPEN").toUpperCase();
+        const side=String(x.signal||"").toUpperCase()==="BUY"?"LONG":"SHORT";
+        const cls=st==="WIN"?"good":st==="LOSS"?"bad":"yellow";
+        return `<tr>
+          <td><b>${x.symbol||"—"}</b></td>
+          <td class="${side==="LONG"?"good":"bad"}">${side}</td>
+          <td class="${cls}"><b>${st}</b></td>
+          <td>${fmt(x.score,0)}</td>
+          <td class="good">${Number(dg.mfe_pct||0).toFixed(3)}%</td>
+          <td class="bad">${Number(dg.mae_pct||0).toFixed(3)}%</td>
+          <td>${Number(dg.risk_pct||0).toFixed(3)}%</td>
+          <td>${rs}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="8">No V6 research trades yet. Confirm the V6 build marker is live.</td></tr>`;
+}
+
 let liveTimer=null;
 async function refreshLiveMarket(){
   if(!currentBest||!currentBest.symbol)return;
@@ -337,9 +494,15 @@ async function refreshStatus(){
     const r=await fetch("/api/status",{cache:"no-store",credentials:"same-origin"});if(r.status===401){location.reload();return}
     const d=await r.json();$("live").textContent=d.running?"● LIVE":"● OFFLINE";$("scannerLive").textContent=d.running?"LIVE":"OFFLINE";$("telegramStatus").textContent=d.telegram?"ON":"OFF";$("statusText").textContent=d.status||"—";$("progress").textContent=d.scan_progress||"—";$("lastScanSec").textContent=d.last_scan_seconds!=null?d.last_scan_seconds+"s":"—";$("alerts").textContent=d.alerts_last_scan||0;
     if(d.next_scan){const ms=new Date(d.next_scan)-new Date();$("nextScan").textContent=ms>0?"In "+Math.floor(ms/60000).toString().padStart(2,"0")+":"+Math.floor((ms%60000)/1000).toString().padStart(2,"0"):"Soon"}
-    const old=currentBest&&currentBest.symbol;showBest(d.best_candidate);if(!old||old!==(d.best_candidate&&d.best_candidate.symbol))refreshLiveMarket();
-    const w=d.rsi_watchlist||{},L=w.oversold_long||[],S=w.overbought_short||[];table("longTable",L,true);table("shortTable",S,false);graph("longGraph",L,true);graph("shortGraph",S,false);heatmap(L,S);
+    const gen=d.signal_generator||{};
+    $("buildMarker").textContent=d.active_build_marker||"—";
+    $("genAction").textContent=gen.action||"WAIT";$("genAction").className="metricVal "+(gen.action==="LONG"?"good":gen.action==="SHORT"?"bad":"yellow");
+    $("genPersist").textContent=gen.flow_persistence||"0/0";
+    $("genReason").textContent=gen.reason||"—";
+    const old=currentBest&&currentBest.symbol;showBest(d.best_candidate,gen);if(d.best_candidate&&(!old||old!==d.best_candidate.symbol))refreshLiveMarket();
+    const w=d.research_watchlist||{},L=w.long||[],S=w.short||[];table("longTable",L,true);table("shortTable",S,false);graph("longGraph",L,true);graph("shortGraph",S,false);heatmap(L,S);
     scorePerformance(d.score_performance||{});
+    auditMain(d);
     const f=d.forming_performance||{};$("fTotal").textContent=f.total_setups||0;$("fWins").textContent=f.wins||0;$("fLosses").textContent=f.losses||0;$("fOpen").textContent=f.open||0;$("fRate").textContent=Number(f.win_rate||0).toFixed(2)+"%";$("fAvg").textContent=Number(f.avg_score||0).toFixed(1);
     const p=d.performance||{};$("sTotal").textContent=p.total_trades||0;$("sWins").textContent=p.wins||0;$("sLosses").textContent=p.losses||0;$("sOpen").textContent=p.open_trades||0;$("sRate").textContent=Number(p.win_rate||0).toFixed(2)+"%";history(d.signals||[]);
     const c=d.capital_summary||d.daily_capital||d.capital||{};
