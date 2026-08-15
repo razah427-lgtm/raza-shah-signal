@@ -44,7 +44,7 @@
 
   <div class="statusGrid">
     <div class="card"><div class="lab">Scanner Status</div><div class="statusVal good" id="scannerLive">LIVE</div><div class="muted">Scanning Top Coins</div></div>
-    <div class="card"><div class="lab">Threshold</div><div class="statusVal good">85+ SCORE</div><div class="muted">Final Signal Only</div></div>
+    <div class="card"><div class="lab">Entry Rule</div><div class="statusVal good">LOGIC CONFIRMED</div><div class="muted">No numeric score gate</div></div>
     <div class="card"><div class="lab">Next Scan</div><div class="statusVal" id="nextScan">—</div></div>
     <div class="card"><div class="lab">Time (KSA)</div><div class="statusVal" id="ksaTime">—</div></div>
     <div class="card"><div class="lab">Telegram</div><div class="statusVal good" id="telegramStatus">CHECKING</div></div>
@@ -125,14 +125,14 @@
   </div>
 
   <div class="perfGrid">
-    <div class="card"><div class="sectionTitle yellow">⭐ BEST FORMING PERFORMANCE (60–84)</div><div class="perfInner"><div class="perfTile"><div class="lab">Total</div><div class="perfValue" id="fTotal">0</div></div><div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="fWins">0</div></div><div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="fLosses">0</div></div><div class="perfTile"><div class="lab">Open</div><div class="perfValue yellow" id="fOpen">0</div></div><div class="perfTile"><div class="lab">Win Rate</div><div class="perfValue good" id="fRate">0%</div></div><div class="perfTile"><div class="lab">Avg Score</div><div class="perfValue" id="fAvg">0</div></div></div></div>
-    <div class="card"><div class="sectionTitle good">✅ STRONG READY PERFORMANCE (85+)</div><div class="perfInner"><div class="perfTile"><div class="lab">Closed</div><div class="perfValue" id="sTotal">0</div></div><div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="sWins">0</div></div><div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="sLosses">0</div></div><div class="perfTile"><div class="lab">Open</div><div class="perfValue yellow" id="sOpen">0</div></div><div class="perfTile" style="grid-column:span 2"><div class="lab">Win Rate</div><div class="perfValue good" id="sRate">0%</div></div></div></div>
+    <div class="card"><div class="sectionTitle yellow">⭐ CURRENT LOGIC FORMING — RESEARCH ONLY</div><div class="perfInner"><div class="perfTile"><div class="lab">Total</div><div class="perfValue" id="fTotal">0</div></div><div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="fWins">0</div></div><div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="fLosses">0</div></div><div class="perfTile"><div class="lab">Open</div><div class="perfValue yellow" id="fOpen">0</div></div><div class="perfTile"><div class="lab">Win Rate</div><div class="perfValue good" id="fRate">0%</div></div><div class="perfTile"><div class="lab">Avg Score</div><div class="perfValue" id="fAvg">0</div></div></div></div>
+    <div class="card"><div class="sectionTitle good">✅ CURRENT LOGIC TRADE PERFORMANCE</div><div class="perfInner"><div class="perfTile"><div class="lab">Closed</div><div class="perfValue" id="sTotal">0</div></div><div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="sWins">0</div></div><div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="sLosses">0</div></div><div class="perfTile"><div class="lab">Open</div><div class="perfValue yellow" id="sOpen">0</div></div><div class="perfTile" style="grid-column:span 2"><div class="lab">Win Rate</div><div class="perfValue good" id="sRate">0%</div></div></div></div>
     <div class="card"><div class="sectionTitle purple">📊 SCANNER ACTIVITY</div><div class="metricGrid"><div class="metric"><div class="lab">Progress</div><div class="metricVal" id="progress">—</div></div><div class="metric"><div class="lab">Last Scan</div><div class="metricVal" id="lastScanSec">—</div></div><div class="metric"><div class="lab">Alerts</div><div class="metricVal" id="alerts">0</div></div><div class="metric"><div class="lab">Status</div><div class="metricVal" id="statusText">—</div></div></div></div>
   </div>
 
 
   <div class="card history">
-    <div class="sectionTitle purple">🎯 SCORE WIN-RATIO ANALYSIS — CLOSED TRADES ONLY</div>
+    <div class="sectionTitle purple">🎯 QUALITY SCORE ANALYSIS — INFORMATION ONLY</div>
 
     <div class="perfInner" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
       <div class="perfTile">
@@ -193,16 +193,16 @@
 
     <div class="muted" style="font-size:9px;margin-top:8px">
       *Best exact score requires at least 3 closed trades. Best range requires at least 5 closed trades.
-      This section is analysis only and does not change the scanner threshold.
+      This section is analysis only. Numeric score does not create or block a trade.
     </div>
   </div>
 
 
   <div class="card history" id="auditMainCard">
-    <div class="sectionTitle purple">🧪 V7 LIQUIDITY HUNTER RESULT — TARGET / FLOW / ACTIVE RISK</div>
+    <div class="sectionTitle purple">🧪 V8 LOGIC-CONFIRMED RESULT — LIQUIDITY / FLOW / ACTIVE RISK</div>
 
     <div class="perfInner" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
-      <div class="perfTile"><div class="lab">Active Build</div><div class="perfValue" id="auditBuild" style="font-size:13px">WAITING V7</div></div>
+      <div class="perfTile"><div class="lab">Active Build</div><div class="perfValue" id="auditBuild" style="font-size:13px">WAITING V8</div></div>
       <div class="perfTile"><div class="lab">Closed</div><div class="perfValue" id="auditClosed">0</div></div>
       <div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="auditWins">0</div></div>
       <div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="auditLosses">0</div></div>
@@ -240,35 +240,10 @@
       </table>
     </div>
     <div class="muted" style="font-size:9px;margin-top:8px">
-      This section uses only the active V7 liquidity-hunter strategy bucket. Older strategy trades remain preserved but are not counted here.
+      This section uses only the active V8 logic-confirmed strategy bucket. Older strategy rows stay archived in the database and are not shown here.
     </div>
   </div>
 
-
-  <div class="card history" id="legacyCard">
-    <div class="sectionTitle yellow">🗂 LEGACY CLOSED TRADES — NOT COUNTED IN V7</div>
-    <div class="perfInner" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
-      <div class="perfTile"><div class="lab">Legacy Closed</div><div class="perfValue" id="legacyTotal">0</div></div>
-      <div class="perfTile"><div class="lab">Legacy Wins</div><div class="perfValue good" id="legacyWins">0</div></div>
-      <div class="perfTile"><div class="lab">Legacy Losses</div><div class="perfValue bad" id="legacyLosses">0</div></div>
-    </div>
-    <div class="tableWrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Closed</th><th>Version</th><th>Coin</th><th>Side</th>
-            <th>Result</th><th>Entry</th><th>Exit</th><th>Reason</th>
-          </tr>
-        </thead>
-        <tbody id="legacyTable">
-          <tr><td colspan="8">No legacy closed trades loaded yet.</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="muted" style="font-size:9px;margin-top:8px">
-      Legacy rows stay visible for audit/history only. They never change V7 win rate, V7 P/L, or V7 capital.
-    </div>
-  </div>
 
   <div class="card history">
     <div class="sectionTitle yellow">💰 DAILY CAPITAL SUMMARY — RISK MANAGED</div>
@@ -282,7 +257,7 @@
     </div>
   </div>
 
-  <div class="card history"><div class="sectionTitle">📋 RECENT VERIFIED TRADES (85+ ONLY)</div><div class="tableWrap"><table><thead><tr><th>Time</th><th>Coin</th><th>Direction</th><th>Score</th><th>Entry</th><th>TP</th><th>SL</th></tr></thead><tbody id="historyTable"></tbody></table></div></div>
+  <div class="card history"><div class="sectionTitle">📋 RECENT LOGIC-CONFIRMED TRADES</div><div class="tableWrap"><table><thead><tr><th>Time</th><th>Coin</th><th>Direction</th><th>Score</th><th>Entry</th><th>TP</th><th>SL</th></tr></thead><tbody id="historyTable"></tbody></table></div></div>
   <div class="footer">Market risk is involved. Past performance is not indicative of future results. Trade at your own risk.</div>
 </div>
 
@@ -291,8 +266,8 @@ const $=id=>document.getElementById(id);
 const N=v=>{const x=Number(v);return Number.isFinite(x)?x:null};
 const fmt=(v,d=8)=>{const x=N(v);return x===null?"—":x.toLocaleString(undefined,{maximumFractionDigits:d})};
 const clean=s=>String(s||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
-const risk=s=>Number(s)>=85?"STRONG":Number(s)>=70?"MEDIUM":"RISKY";
-const riskClass=r=>r==="STRONG"?"strong":r==="MEDIUM"?"medium":"risky";
+const risk=s=>Number(s)>=80?"HIGH QUALITY":Number(s)>=60?"MEDIUM QUALITY":"LOW QUALITY";
+const riskClass=r=>r==="HIGH QUALITY"?"strong":r==="MEDIUM QUALITY"?"medium":"risky";
 
 let currentBest=null,currentMarket=null,chartCoin="";
 function loadChart(coin){
@@ -328,9 +303,9 @@ function showBest(c,gen){
     $("liqPersist").textContent=(gen&&gen.liquidity_persistence)||"0/0";
     return;
   }
-  const sc=Number(c.score||0),buy=String(c.signal).toUpperCase()==="BUY",hard=c.hard_confirm===true||String(c.hard_confirm).toLowerCase()==="true",ready=sc>=85&&hard,r=c.risk_label||risk(sc);
+  const sc=Number(c.score||0),buy=String(c.signal).toUpperCase()==="BUY",hard=c.hard_confirm===true||String(c.hard_confirm).toLowerCase()==="true",ready=hard,r=c.risk_label||risk(sc);
   $("coin").textContent=c.symbol||"—";$("sideBadge").textContent=buy?(ready?"BUY / LONG":"LONG FORMING"):(ready?"SELL / SHORT":"SHORT FORMING");$("sideBadge").className="sideBadge "+(buy?"sideLong":"sideShort");
-  $("riskBadge").textContent="RISK LEVEL: "+r+(r==="STRONG"?" ●":"");$("riskBadge").className="riskBadge "+riskClass(r);$("score").textContent=sc;$("scoreFill").style.width=Math.min(100,Math.max(0,sc))+"%";
+  $("riskBadge").textContent="RISK LEVEL: "+r+(r==="HIGH QUALITY"?" ●":"");$("riskBadge").className="riskBadge "+riskClass(r);$("score").textContent=sc;$("scoreFill").style.width=Math.min(100,Math.max(0,sc))+"%";
   $("setupText").textContent=ready?"TRADE READY — hard confirmation passed":"Watching for confirmation...";$("entry").textContent=fmt(c.price);$("tp").textContent=fmt(c.tp);$("sl").textContent=fmt(c.sl);$("trend").textContent=c.trend_5m==="BULL"?"BULLISH":c.trend_5m==="BEAR"?"BEARISH":"—";
   $("hardConfirm").textContent=hard?"YES ✅":"NOT YET";$("hardConfirm").className="metricVal "+(hard?"good":"yellow");
   $("researchMode").textContent=c.research_mode||"LIQUIDITY STOP-POOL HUNTER";
@@ -378,7 +353,7 @@ function table(id,rows,longSide){
 }
 function graph(id,rows,longSide){const vals=(rows||[]).map(x=>Number(x.rsi_15m)).filter(Number.isFinite);if(!vals.length){$(id).innerHTML="";return}const W=650,H=85,p=8,pts=vals.map((v,i)=>`${p+(W-2*p)*(i/Math.max(1,vals.length-1))},${H-p-(H-2*p)*((Math.max(20,Math.min(80,v))-20)/60)}`).join(" "),c=longSide?"#42ef8d":"#ff525f";$(id).innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="#385348" stroke-dasharray="5 5"/><polyline points="${pts}" fill="none" stroke="${c}" stroke-width="3"/></svg>`}
 
-function history(rows){rows=rows||[];$("historyTable").innerHTML=rows.length?rows.slice(0,10).map(x=>`<tr><td>${x.time_utc?new Date(x.time_utc).toLocaleString():"—"}</td><td><b>${x.symbol||"—"}</b></td><td class="${String(x.signal).toUpperCase()==="BUY"?"good":"bad"}">${String(x.signal).toUpperCase()==="BUY"?"LONG":"SHORT"}</td><td>${fmt(x.score,0)}</td><td>${fmt(x.price)}</td><td class="good">${fmt(x.tp)}</td><td class="bad">${fmt(x.sl)}</td></tr>`).join(""):`<tr><td colspan="7">No verified 85+ trades yet.</td></tr>`}
+function history(rows){rows=rows||[];$("historyTable").innerHTML=rows.length?rows.slice(0,10).map(x=>`<tr><td>${x.time_utc?new Date(x.time_utc).toLocaleString():"—"}</td><td><b>${x.symbol||"—"}</b></td><td class="${String(x.signal).toUpperCase()==="BUY"?"good":"bad"}">${String(x.signal).toUpperCase()==="BUY"?"LONG":"SHORT"}</td><td>${fmt(x.score,0)}</td><td>${fmt(x.price)}</td><td class="good">${fmt(x.tp)}</td><td class="bad">${fmt(x.sl)}</td></tr>`).join(""):`<tr><td colspan="7">No logic-confirmed trades yet.</td></tr>`}
 
 
 function scorePerformance(sp){
@@ -433,40 +408,13 @@ function scorePerformance(sp){
 
 
 
-function legacyTrades(d){
-  const lg=d.legacy_trades||{};
-  const items=Array.isArray(lg.items)?lg.items:[];
-  $("legacyTotal").textContent=Number(lg.total_closed||0);
-  $("legacyWins").textContent=Number(lg.wins||0);
-  $("legacyLosses").textContent=Number(lg.losses||0);
-
-  $("legacyTable").innerHTML=items.length
-    ? items.map(x=>{
-        const st=String(x.status||"").toUpperCase();
-        const side=String(x.signal||"").toUpperCase()==="BUY"?"LONG":"SHORT";
-        const cls=st==="WIN"?"good":st==="LOSS"?"bad":"yellow";
-        const closed=x.closed_time_utc?new Date(x.closed_time_utc).toLocaleString():"—";
-        return `<tr>
-          <td>${closed}</td>
-          <td>${x.strategy_version||"—"}</td>
-          <td><b>${x.symbol||"—"}</b></td>
-          <td class="${side==="LONG"?"good":"bad"}">${side}</td>
-          <td class="${cls}"><b>${st}</b></td>
-          <td>${fmt(x.entry)}</td>
-          <td>${fmt(x.exit_price)}</td>
-          <td>${x.exit_reason||"—"}</td>
-        </tr>`;
-      }).join("")
-    : `<tr><td colspan="8">No legacy closed trades loaded yet.</td></tr>`;
-}
-
 function auditMain(d){
   const items=Array.isArray(d.trade_audit)?d.trade_audit:[];
   const p=d.performance||{};
   const build=d.active_build_marker
     || ((d.strategy_version||"")+" | "+(d.build_version||""));
 
-  $("auditBuild").textContent=build||"WAITING V7";
+  $("auditBuild").textContent=build||"WAITING V8";
   $("auditClosed").textContent=Number(p.total_trades||0);
   $("auditWins").textContent=Number(p.wins||0);
   $("auditLosses").textContent=Number(p.losses||0);
@@ -511,7 +459,7 @@ function auditMain(d){
 
   $("auditMainProblem").textContent=
     problemCandidates[0][1]>0 ? problemCandidates[0][0] :
-    (closed.length ? "NORMAL / MIXED" : "NEED NEW V7 TRADES");
+    (closed.length ? "NORMAL / MIXED" : "NEED NEW V8 TRADES");
 
   $("auditTable").innerHTML=items.length
     ? items.slice(0,12).map(x=>{
@@ -531,7 +479,7 @@ function auditMain(d){
           <td>${rs}</td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="8">No V7 liquidity-hunter trades yet. Confirm the V7 build marker is live.</td></tr>`;
+    : `<tr><td colspan="8">No V8 logic-confirmed trades yet. Confirm the V8 build marker is live.</td></tr>`;
 }
 
 let liveTimer=null;
@@ -562,7 +510,6 @@ async function refreshStatus(){
     const w=d.research_watchlist||{},L=w.long||[],S=w.short||[];table("longTable",L,true);table("shortTable",S,false);graph("longGraph",L,true);graph("shortGraph",S,false);heatmap(L,S);
     scorePerformance(d.score_performance||{});
     auditMain(d);
-    legacyTrades(d);
     const f=d.forming_performance||{};$("fTotal").textContent=f.total_setups||0;$("fWins").textContent=f.wins||0;$("fLosses").textContent=f.losses||0;$("fOpen").textContent=f.open||0;$("fRate").textContent=Number(f.win_rate||0).toFixed(2)+"%";$("fAvg").textContent=Number(f.avg_score||0).toFixed(1);
     const p=d.performance||{};$("sTotal").textContent=p.total_trades||0;$("sWins").textContent=p.wins||0;$("sLosses").textContent=p.losses||0;$("sOpen").textContent=p.open_trades||0;$("sRate").textContent=Number(p.win_rate||0).toFixed(2)+"%";history(d.signals||[]);
     const c=d.capital_summary||d.daily_capital||d.capital||{};
