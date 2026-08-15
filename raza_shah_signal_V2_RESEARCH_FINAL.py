@@ -41,7 +41,8 @@ from flask import (
 # ============================================================
 
 STRATEGY_VERSION = "V2R2_RESEARCH_STABLE"
-BUILD_VERSION = "V3_SMART_MONEY_TPSL"
+BUILD_VERSION = "V3_RSI_REVERSAL_SMART_FINAL"
+REVERSAL_TEST_START_UTC = "2026-08-15T08:37:00+00:00"  # KSA 11:37, new reversal forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -102,6 +103,18 @@ ORDERBOOK_HEAT_MAX_DIST_PCT = float(os.getenv("ORDERBOOK_HEAT_MAX_DIST_PCT", "0.
 ORDERBOOK_SL_WALL_MAX_DIST_PCT = float(os.getenv("ORDERBOOK_SL_WALL_MAX_DIST_PCT", "0.012"))
 WHALE_TRADE_MIN_USD = float(os.getenv("WHALE_TRADE_MIN_USD", "5000"))
 WHALE_TRADE_MEDIAN_MULT = float(os.getenv("WHALE_TRADE_MEDIAN_MULT", "5.0"))
+
+# RSI REVERSAL DIRECTION — FINAL TEST LOGIC
+# Overbought -> SHORT, Oversold -> LONG.
+# RSI alone never opens a trade: turn + 15m liquidity sweep + 5m trigger + live flow/book are required.
+RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "70"))
+RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "30"))
+RSI_STRONG_OVERBOUGHT = float(os.getenv("RSI_STRONG_OVERBOUGHT", "75"))
+RSI_STRONG_OVERSOLD = float(os.getenv("RSI_STRONG_OVERSOLD", "25"))
+RSI_EXTREME_OVERBOUGHT = float(os.getenv("RSI_EXTREME_OVERBOUGHT", "80"))
+RSI_EXTREME_OVERSOLD = float(os.getenv("RSI_EXTREME_OVERSOLD", "20"))
+RSI_TURN_MIN = float(os.getenv("RSI_TURN_MIN", "0.50"))
+RSI_EXTREME_LOOKBACK = int(os.getenv("RSI_EXTREME_LOOKBACK", "3"))
 
 # BTC market regime is CONTEXT ONLY in V2R1.
 # It is recorded and scored, but it never hard-rejects an otherwise valid altcoin setup.
@@ -2146,6 +2159,135 @@ def has_recent_or_open_trade(symbol, side):
     return False
 
 # ============================================================
+# RSI REVERSAL DIRECTION
+# ============================================================
+
+def reversal_rsi_context(symbol):
+    """
+    Direction is defined by 15m RSI exhaustion, not by 4H trend.
+    SELL: a recent RSI overbought extreme is turning down.
+    BUY:  a recent RSI oversold extreme is turning up.
+    4H/1H are retained as context only.
+    """
+    c15 = candle_dicts(symbol, "15m", 80)
+    if len(c15) < 35:
+        raise RuntimeError(f"Not enough 15M candles for RSI reversal {symbol}")
+
+    closes = [x["close"] for x in c15]
+    r_now = float(rsi(closes, 14))
+    r_prev = float(rsi(closes[:-1], 14))
+    r_prev2 = float(rsi(closes[:-2], 14))
+
+    recent = [r_now, r_prev, r_prev2][:max(1, RSI_EXTREME_LOOKBACK)]
+    peak = max(recent)
+    trough = min(recent)
+    turn_down = (r_prev - r_now) >= RSI_TURN_MIN
+    turn_up = (r_now - r_prev) >= RSI_TURN_MIN
+
+    side = None
+    reason = "RSI_NOT_EXTREME"
+
+    if peak >= RSI_OVERBOUGHT and turn_down:
+        side = "SELL"
+        reason = "OVERBOUGHT_TURN_DOWN"
+    elif trough <= RSI_OVERSOLD and turn_up:
+        side = "BUY"
+        reason = "OVERSOLD_TURN_UP"
+
+    return {
+        "side": side,
+        "reason": reason,
+        "rsi_now": round(r_now, 2),
+        "rsi_prev": round(r_prev, 2),
+        "rsi_prev2": round(r_prev2, 2),
+        "rsi_peak": round(peak, 2),
+        "rsi_trough": round(trough, 2),
+        "turn_down": bool(turn_down),
+        "turn_up": bool(turn_up),
+    }
+
+
+def reversal_quality_score(side, rctx, setup, trigger, delta, book, spread, oi, whale=None):
+    """0-100 score designed for the RSI reversal model.
+    Score ranks already-confirmed reversals; it does not replace hard confirmations.
+    """
+    score = 0
+    whale = whale or {}
+
+    peak = float(rctx.get("rsi_peak") or 50)
+    trough = float(rctx.get("rsi_trough") or 50)
+
+    # RSI exhaustion: 20 / 25 / 30 points.
+    if side == "SELL":
+        if peak >= RSI_EXTREME_OVERBOUGHT:
+            score += 30
+        elif peak >= RSI_STRONG_OVERBOUGHT:
+            score += 25
+        elif peak >= RSI_OVERBOUGHT:
+            score += 20
+    else:
+        if trough <= RSI_EXTREME_OVERSOLD:
+            score += 30
+        elif trough <= RSI_STRONG_OVERSOLD:
+            score += 25
+        elif trough <= RSI_OVERSOLD:
+            score += 20
+
+    # SMC liquidity sweep is mandatory and carries 25 points.
+    if setup.get("sweep"):
+        score += 25
+
+    # 5m direction trigger is mandatory and carries 15 points.
+    if trigger.get("valid"):
+        score += 15
+
+    flow_dir = float(delta) if side == "BUY" else -float(delta)
+    if flow_dir >= 0.50:
+        score += 10
+    elif flow_dir >= 0.30:
+        score += 8
+    elif flow_dir >= MIN_FLOW_DELTA:
+        score += 6
+
+    book_dir = float(book) if side == "BUY" else -float(book)
+    if book_dir >= 0.50:
+        score += 10
+    elif book_dir >= 0.30:
+        score += 8
+    elif book_dir >= MIN_BOOK_IMB:
+        score += 6
+
+    if spread <= 0.5:
+        score += 5
+    elif spread <= 1.0:
+        score += 4
+    elif spread <= MAX_SPREAD_BPS:
+        score += 3
+
+    vr = float(setup.get("vol_ratio") or 0)
+    if vr >= 1.5:
+        score += 5
+    elif vr >= 1.1:
+        score += 4
+    elif vr >= MIN_VOL_RATIO:
+        score += 2
+
+    whale_dir = float(whale.get("whale_delta") or 0)
+    if side == "SELL":
+        whale_dir = -whale_dir
+    if whale_dir >= 0.50:
+        score += 5
+    elif whale_dir >= 0.25:
+        score += 3
+
+    if oi > 0:
+        score += 2
+    elif oi >= MIN_OI_CHANGE_PCT:
+        score += 1
+
+    return min(100, int(round(score)))
+
+# ============================================================
 # LIGHT SCAN
 # ============================================================
 
@@ -2156,19 +2298,21 @@ def light_metrics(symbol):
         return None
 
     closes = [x["close"] for x in c15]
-
     r15 = rsi(closes, 14)
+    r_prev = rsi(closes[:-1], 14) if len(closes) > 15 else r15
     vr = volume_ratio(c15, 20)
 
     a = atr_value(c15[-40:], 14)
     price = closes[-1]
     atr_pct = a / price if price > 0 else 0.0
 
-    # Light ranking only: unusual RSI + volume + tradable volatility.
-    rsi_extreme = abs(r15 - 50.0)
+    # Reversal-first ranking: extremes + active turning + volume/volatility.
+    extreme_strength = max(0.0, r15 - 50.0, 50.0 - r15)
+    turning_bonus = abs(r15 - r_prev) * 4.0
 
     rank = (
-        rsi_extreme * 1.5
+        extreme_strength * 2.0
+        + turning_bonus
         + min(vr, 3.0) * 8
         + min(atr_pct * 10000, 100)
     )
@@ -2176,6 +2320,7 @@ def light_metrics(symbol):
     return {
         "price": price,
         "rsi_15m": round(r15, 2),
+        "rsi_prev_15m": round(float(r_prev), 2),
         "vol_ratio_15m": vr,
         "atr_15m_pct": atr_pct,
         "rank": rank,
@@ -2212,65 +2357,48 @@ def _deep_scan_one(item):
     _, symbol, lm, btc_regime = item
 
     try:
-        reg = regime_4h(symbol)
+        # FINAL REVERSAL DIRECTION:
+        # overbought -> SELL, oversold -> BUY.
+        rctx = reversal_rsi_context(symbol)
+        side = rctx.get("side")
 
-        if reg["regime"] == "SIDEWAYS":
+        if side not in ("BUY", "SELL"):
             return {
                 "symbol": symbol,
-                "blocked": "4H_SIDEWAYS",
+                "blocked": "RSI_NOT_REVERSING",
                 "score": 0,
                 "lm": lm,
+                "rsi": rctx,
                 "error": None,
             }
 
-        side = "BUY" if reg["regime"] == "BULL" else "SELL"
+        # Keep 4H / 1H for dashboard/context only; they no longer command direction.
+        try:
+            reg = regime_4h(symbol)
+        except Exception as e:
+            reg = {"regime": "SIDEWAYS", "error": str(e)}
 
-        if not btc_market_allows(side, btc_regime):
-            return {
-                "symbol": symbol,
-                "blocked": "BTC_CONFLICT",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "error": None,
-            }
+        try:
+            st = structure_1h(symbol)
+        except Exception as e:
+            st = {"structure": "RANGE", "error": str(e)}
 
-        st = structure_1h(symbol)
-
-        structure_ok = (
-            (side == "BUY" and st["structure"] == "BULL_MOMENTUM")
-            or
-            (side == "SELL" and st["structure"] == "BEAR_MOMENTUM")
-        )
-
-        if not structure_ok:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "1H_STRUCTURE",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "error": None,
-            }
-
+        # Reversal must occur at a 15m liquidity sweep/reclaim/rejection.
         setup = liquidity_setup_15m(symbol, side)
-
-        if not setup["valid"]:
+        if not setup.get("valid") or not setup.get("sweep"):
             return {
                 "symbol": symbol,
                 "side": side,
-                "blocked": "15M_LIQUIDITY",
+                "blocked": "15M_REVERSAL_SWEEP",
                 "score": 0,
                 "lm": lm,
+                "rsi": rctx,
                 "regime": reg,
                 "structure": st,
                 "setup": setup,
                 "error": None,
             }
 
-        # Participation filter.
         if setup["vol_ratio"] < MIN_VOL_RATIO:
             return {
                 "symbol": symbol,
@@ -2278,19 +2406,31 @@ def _deep_scan_one(item):
                 "blocked": "LOW_VOLUME",
                 "score": 0,
                 "lm": lm,
+                "rsi": rctx,
                 "regime": reg,
                 "structure": st,
                 "setup": setup,
                 "error": None,
             }
 
+        # Unlike old V3, 5m confirmation is mandatory for a counter-move reversal.
         trigger = entry_trigger_5m(symbol, side)
-
-        # V3: 5M is an execution-quality bonus, not a mandatory veto.
-        # Strong 4H/1H/15M + live microstructure can still qualify without it.
+        if not trigger.get("valid"):
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "5M_REVERSAL_TRIGGER",
+                "score": 0,
+                "lm": lm,
+                "rsi": rctx,
+                "regime": reg,
+                "structure": st,
+                "setup": setup,
+                "trigger": trigger,
+                "error": None,
+            }
 
         heat = orderbook_heat_metrics(symbol)
-
         if not heat:
             return {
                 "symbol": symbol,
@@ -2309,24 +2449,11 @@ def _deep_scan_one(item):
         oi = oi_change_pct(symbol)
 
         live_ok, live_reasons = live_confirmation(
-            side,
-            delta,
-            book,
-            spread,
-            oi,
+            side, delta, book, spread, oi,
         )
 
-        q = quality_score(
-            side,
-            reg,
-            st,
-            setup,
-            trigger,
-            delta,
-            book,
-            spread,
-            oi,
-            btc_regime,
+        q = reversal_quality_score(
+            side, rctx, setup, trigger, delta, book, spread, oi, whale=whale,
         )
 
         score_ok = q >= MIN_TRADE_SCORE
@@ -2335,13 +2462,8 @@ def _deep_scan_one(item):
             live_reasons = list(live_reasons) + ["QUALITY_SCORE"]
 
         price = current_price(symbol)
-
         risk = dynamic_risk(
-            price,
-            side,
-            setup,
-            heat=heat,
-            whale=whale,
+            price, side, setup, heat=heat, whale=whale,
         )
 
         if risk is None:
@@ -2351,6 +2473,7 @@ def _deep_scan_one(item):
                 "blocked": "SMART_RISK_NO_ROOM",
                 "score": q,
                 "lm": lm,
+                "rsi": rctx,
                 "regime": reg,
                 "structure": st,
                 "setup": setup,
@@ -2373,10 +2496,14 @@ def _deep_scan_one(item):
             "risk_label": risk_label(q),
             "price": price,
 
-            "regime_4h": reg["regime"],
-            "structure_1h": st["structure"],
-            "setup_15m": setup["setup"],
-            "trigger_5m": trigger["trigger"],
+            "regime_4h": reg.get("regime", "SIDEWAYS"),
+            "structure_1h": st.get("structure", "RANGE"),
+            "setup_15m": setup.get("setup", "NONE"),
+            "trigger_5m": trigger.get("trigger", "WAIT"),
+            "rsi_15m": rctx.get("rsi_now"),
+            "rsi_peak": rctx.get("rsi_peak"),
+            "rsi_trough": rctx.get("rsi_trough"),
+            "reversal_reason": rctx.get("reason"),
 
             "flow_delta": delta,
             "buy_usd_60s": buy,
@@ -2402,11 +2529,7 @@ def _deep_scan_one(item):
 
             "hard_confirm": trade_ready,
             "blocked_reasons": live_reasons,
-            "status": (
-                "TRADE READY"
-                if trade_ready
-                else "WAIT LIVE CONFIRMATION"
-            ),
+            "status": "TRADE READY" if trade_ready else "WAIT LIVE CONFIRMATION",
         }
 
         return {
@@ -2416,6 +2539,7 @@ def _deep_scan_one(item):
             "candidate": candidate,
             "blocked": None if trade_ready else ("QUALITY_SCORE" if not score_ok else "LIVE_CONFIRM"),
             "lm": lm,
+            "rsi": rctx,
             "regime": reg,
             "structure": st,
             "setup": setup,
@@ -2435,6 +2559,7 @@ def _deep_scan_one(item):
             "error": str(e),
         }
 
+
 # ============================================================
 # MAIN SCAN
 # ============================================================
@@ -2443,11 +2568,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V2R3 BALANCED BITGET FUTURES SCAN START")
+    scan_log("RAZA V3 RSI REVERSAL SMART SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V2R3 scanning Top {TOP_COINS} Bitget Futures..."
+            f"V3 reversal scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
