@@ -41,7 +41,7 @@ from flask import (
 # ============================================================
 
 STRATEGY_VERSION = "V7_LIQUIDITY_HUNTER_20260815"
-BUILD_VERSION = "V7_LIQUIDITY_TARGET_1"
+BUILD_VERSION = "V7_LIQUIDITY_TARGET_2_QUALITY_FREQ"
 REVERSAL_TEST_START_UTC = "2026-08-15T11:24:00+00:00"  # V7 liquidity-hunter clean forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
@@ -50,7 +50,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
 TOP_COINS = int(os.getenv("TOP_COINS", "100"))
-DEEP_CHECK = int(os.getenv("DEEP_CHECK", "50"))
+DEEP_CHECK = int(os.getenv("DEEP_CHECK", "60"))
 
 LIGHT_SCAN_WORKERS = int(os.getenv("LIGHT_SCAN_WORKERS", "8"))
 DEEP_SCAN_WORKERS = int(os.getenv("DEEP_SCAN_WORKERS", "4"))
@@ -128,13 +128,13 @@ TRADE_AUDIT_LIMIT = int(os.getenv("TRADE_AUDIT_LIMIT", "50"))
 # V6 research-flow selection.
 # Direction comes from persistent higher-timeframe momentum + flow, not RSI reversal.
 # RSI is only an anti-chase / exhaustion veto.
-ENTRY_FLOW_MIN = float(os.getenv("ENTRY_FLOW_MIN", "0.12"))
-ENTRY_BOOK_MIN = float(os.getenv("ENTRY_BOOK_MIN", "0.12"))
+ENTRY_FLOW_MIN = float(os.getenv("ENTRY_FLOW_MIN", "0.10"))
+ENTRY_BOOK_MIN = float(os.getenv("ENTRY_BOOK_MIN", "0.10"))
 ENTRY_WHALE_HOSTILE_FLOOR = float(os.getenv("ENTRY_WHALE_HOSTILE_FLOOR", "-0.10"))
 FLOW_HISTORY_MAX = int(os.getenv("FLOW_HISTORY_MAX", "4"))
 FLOW_PERSIST_REQUIRED = int(os.getenv("FLOW_PERSIST_REQUIRED", "2"))
-FLOW_PERSIST_FLOW_MIN = float(os.getenv("FLOW_PERSIST_FLOW_MIN", "0.08"))
-FLOW_PERSIST_BOOK_MIN = float(os.getenv("FLOW_PERSIST_BOOK_MIN", "0.05"))
+FLOW_PERSIST_FLOW_MIN = float(os.getenv("FLOW_PERSIST_FLOW_MIN", "0.06"))
+FLOW_PERSIST_BOOK_MIN = float(os.getenv("FLOW_PERSIST_BOOK_MIN", "0.04"))
 OI_CONTINUATION_FLOOR = float(os.getenv("OI_CONTINUATION_FLOOR", "-0.05"))
 RSI_LONG_CHASE_MAX = float(os.getenv("RSI_LONG_CHASE_MAX", "74"))
 RSI_SHORT_CHASE_MIN = float(os.getenv("RSI_SHORT_CHASE_MIN", "26"))
@@ -149,9 +149,9 @@ LIQ_CLUSTER_TOL_PCT = float(os.getenv("LIQ_CLUSTER_TOL_PCT", "0.0012"))
 LIQ_CLUSTER_TOL_ATR = float(os.getenv("LIQ_CLUSTER_TOL_ATR", "0.20"))
 LIQ_TARGET_MIN_DIST_PCT = float(os.getenv("LIQ_TARGET_MIN_DIST_PCT", "0.0020"))
 LIQ_TARGET_MAX_DIST_PCT = float(os.getenv("LIQ_TARGET_MAX_DIST_PCT", "0.0400"))
-LIQ_TARGET_SCORE_MIN = float(os.getenv("LIQ_TARGET_SCORE_MIN", "4.0"))
-LIQ_TARGET_SCORE_GAP = float(os.getenv("LIQ_TARGET_SCORE_GAP", "1.0"))
-LIQ_TARGET_DOMINANCE_RATIO = float(os.getenv("LIQ_TARGET_DOMINANCE_RATIO", "1.20"))
+LIQ_TARGET_SCORE_MIN = float(os.getenv("LIQ_TARGET_SCORE_MIN", "3.75"))
+LIQ_TARGET_SCORE_GAP = float(os.getenv("LIQ_TARGET_SCORE_GAP", "0.70"))
+LIQ_TARGET_DOMINANCE_RATIO = float(os.getenv("LIQ_TARGET_DOMINANCE_RATIO", "1.15"))
 LIQ_TARGET_HISTORY_MAX = int(os.getenv("LIQ_TARGET_HISTORY_MAX", "4"))
 LIQ_TARGET_PERSIST_REQUIRED = int(os.getenv("LIQ_TARGET_PERSIST_REQUIRED", "2"))
 LIQ_PATH_BLOCK_WALL_RATIO = float(os.getenv("LIQ_PATH_BLOCK_WALL_RATIO", "5.0"))
@@ -416,6 +416,7 @@ state = {
     "last_error": None,
     "market_regime": None,
     "blocked_counts": {},
+    "scan_diagnostics": {},
     "watchlist": [],
     "research_watchlist": {"long": [], "short": []},
     "signal_generator": {"action": "WAIT", "reason": "STARTING"},
@@ -3607,37 +3608,70 @@ def liquidity_hunter_risk(entry,side,setup,liq_map,heat=None,whale=None):
 # ============================================================
 
 def light_metrics(symbol):
-    c15=candle_dicts(symbol,"15m",100)
-    if len(c15)<60: return None
-    closes=[x["close"] for x in c15]; price=closes[-1]; r15=rsi(closes,14); vr=volume_ratio(c15,20); a=atr_value(c15[-40:],14); atr_pct=a/price if price>0 else 0.0
-    e20=ema(closes[-70:],20); e50=ema(closes[-80:],50); e20_prev=ema(closes[-70:-4],20); slope=((e20/e20_prev)-1.0) if e20_prev>0 else 0.0
-    liq=liquidity_target_map_from_candles(c15,price,heat=None)
-    up_score=float(liq.get("up_score") or 0); down_score=float(liq.get("down_score") or 0)
-    bias="BUY" if liq.get("preferred_side")=="BUY" else "SELL" if liq.get("preferred_side")=="SELL" else "WAIT"
-    rank=abs(up_score-down_score)*16.0+max(up_score,down_score)*10.0+min(vr,3.0)*7.0+min(atr_pct*10000.0,60.0)+min(abs(slope)*100000.0,30.0)
-    return {"price":price,"rsi_15m":round(r15,2),"vol_ratio_15m":vr,"atr_15m_pct":atr_pct,"ema20_15m":e20,"ema50_15m":e50,"ema20_slope_15m":slope,"trend_bias":bias,"liquidity_up_score":up_score,"liquidity_down_score":down_score,"liquidity_dominance":float(liq.get("dominance_ratio") or 0),"liquidity_target_up":float((liq.get("up") or {}).get("price") or 0),"liquidity_target_down":float((liq.get("down") or {}).get("price") or 0),"rank":rank}
+    # First request is enough for established markets. If Bitget briefly returns
+    # a short candle page, retry once with a larger page instead of silently
+    # removing the coin from the quality pipeline.
+    c15 = candle_dicts(symbol, "15m", 100)
+    if len(c15) < 60:
+        time.sleep(0.15)
+        c15 = candle_dicts(symbol, "15m", 160)
+    if len(c15) < 60:
+        return None
+
+    closes = [x["close"] for x in c15]
+    price = closes[-1]
+    r15 = rsi(closes, 14)
+    vr = volume_ratio(c15, 20)
+    a = atr_value(c15[-40:], 14)
+    atr_pct = a / price if price > 0 else 0.0
+    e20 = ema(closes[-70:], 20)
+    e50 = ema(closes[-80:], 50)
+    e20_prev = ema(closes[-70:-4], 20)
+    slope = ((e20 / e20_prev) - 1.0) if e20_prev > 0 else 0.0
+    liq = liquidity_target_map_from_candles(c15, price, heat=None)
+    up_score = float(liq.get("up_score") or 0)
+    down_score = float(liq.get("down_score") or 0)
+    bias = (
+        "BUY" if liq.get("preferred_side") == "BUY"
+        else "SELL" if liq.get("preferred_side") == "SELL"
+        else "WAIT"
+    )
+    rank = (
+        abs(up_score - down_score) * 16.0
+        + max(up_score, down_score) * 10.0
+        + min(vr, 3.0) * 7.0
+        + min(atr_pct * 10000.0, 60.0)
+        + min(abs(slope) * 100000.0, 30.0)
+    )
+    return {
+        "price": price,
+        "rsi_15m": round(r15, 2),
+        "vol_ratio_15m": vr,
+        "atr_15m_pct": atr_pct,
+        "ema20_15m": e20,
+        "ema50_15m": e50,
+        "ema20_slope_15m": slope,
+        "trend_bias": bias,
+        "liquidity_up_score": up_score,
+        "liquidity_down_score": down_score,
+        "liquidity_dominance": float(liq.get("dominance_ratio") or 0),
+        "liquidity_target_up": float((liq.get("up") or {}).get("price") or 0),
+        "liquidity_target_down": float((liq.get("down") or {}).get("price") or 0),
+        "rank": rank,
+    }
+
 
 def _light_scan_one(symbol):
     try:
         lm = light_metrics(symbol)
 
         if not lm:
-            return None
+            return (None, symbol, None, "SKIP:SHORT_15M_HISTORY")
 
-        return (
-            lm["rank"],
-            symbol,
-            lm,
-            None,
-        )
+        return (lm["rank"], symbol, lm, None)
 
     except Exception as e:
-        return (
-            None,
-            symbol,
-            None,
-            str(e),
-        )
+        return (None, symbol, None, f"{type(e).__name__}: {e}")
 
 # ============================================================
 # V6 RESEARCH FLOW / MOMENTUM HELPERS
@@ -3854,7 +3888,7 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V6 RESEARCH FLOW MOMENTUM SCAN START")
+    scan_log("RAZA V7 QUALITY + FREQUENCY LIQUIDITY SCAN START")
 
     with state_lock:
         state["status"] = (
@@ -3946,6 +3980,7 @@ def scan_once():
 
     light_candidates = []
     light_errors = []
+    light_skips = {}
 
     with ThreadPoolExecutor(
         max_workers=max(1, LIGHT_SCAN_WORKERS)
@@ -3973,9 +4008,13 @@ def scan_once():
                         (rank, symbol, lm)
                     )
                 elif err:
-                    light_errors.append(
-                        f"{symbol}: {err}"
-                    )
+                    if str(err).startswith("SKIP:"):
+                        reason = str(err).split(":", 1)[1] or "LIGHT_SKIP"
+                        light_skips[reason] = light_skips.get(reason, 0) + 1
+                    else:
+                        light_errors.append(
+                            f"{symbol}: {err}"
+                        )
 
             if (
                 done == 1
@@ -4027,8 +4066,21 @@ def scan_once():
 
     scan_log(
         f"LIGHT SCAN COMPLETE: "
-        f"{len(light_candidates)} candidates"
+        f"{len(light_candidates)} candidates "
+        f"| skipped={light_skips} | errors={len(light_errors)}"
     )
+
+    with state_lock:
+        state["scan_diagnostics"] = {
+            "top_symbols": len(symbols),
+            "light_ok": len(light_candidates),
+            "light_skipped": sum(light_skips.values()),
+            "light_skip_reasons": dict(light_skips),
+            "light_errors": len(light_errors),
+            "deep_planned": min(len(light_candidates), DEEP_CHECK),
+            "quality_gate": MIN_TRADE_SCORE,
+            "build_version": BUILD_VERSION,
+        }
 
     # ----------------------------
     # DEEP SCAN
@@ -4048,6 +4100,9 @@ def scan_once():
     best = None
     deep_errors = []
     blocked_counts = {}
+    blocked_examples = {}
+    deep_completed = 0
+    candidate_count = 0
 
     with ThreadPoolExecutor(
         max_workers=max(1, DEEP_SCAN_WORKERS)
@@ -4062,6 +4117,7 @@ def scan_once():
         }
 
         for future in as_completed(futures):
+            deep_completed += 1
             result = future.result()
             symbol = result.get("symbol")
 
@@ -4076,8 +4132,11 @@ def scan_once():
                 blocked_counts[blocked] = (
                     blocked_counts.get(blocked, 0) + 1
                 )
+                blocked_examples.setdefault(blocked, symbol)
 
             c = result.get("candidate")
+            if c:
+                candidate_count += 1
 
             # Best candidate can be READY or waiting only on live confirmation.
             if c:
@@ -4159,6 +4218,18 @@ def scan_once():
         state["alerts_last_scan"] = alerts
         state["last_scan_seconds"] = elapsed
         state["blocked_counts"] = blocked_counts
+        diag = dict(state.get("scan_diagnostics") or {})
+        diag.update({
+            "deep_checked": deep_completed,
+            "deep_errors": len(deep_errors),
+            "blocked_counts": dict(blocked_counts),
+            "blocked_examples": dict(blocked_examples),
+            "candidate_count": candidate_count,
+            "alerts_ready": alerts,
+            "best_symbol": best.get("symbol") if best else None,
+            "best_score": best.get("score", 0) if best else 0,
+        })
+        state["scan_diagnostics"] = diag
 
         top_block = (
             max(blocked_counts, key=blocked_counts.get)
@@ -4490,6 +4561,7 @@ def scanner_loop():
         f"Exchange: BITGET FUTURES\n"
         f"Top Coins: {TOP_COINS}\n"
         f"Deep Scan: {DEEP_CHECK}\n"
+        f"Build: {BUILD_VERSION}\n"
         f"Scan interval: {SCAN_INTERVAL//60} minutes\n"
         f"KSA Session: "
         f"{KSA_SESSION_START}:00-{KSA_SESSION_END}:00 "
