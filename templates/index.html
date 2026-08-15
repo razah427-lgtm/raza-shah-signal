@@ -53,7 +53,7 @@
 
   <div class="mainGrid">
     <div class="card">
-      <div class="sectionTitle">🧠 RESEARCH SIGNAL GENERATOR (LIVE)</div>
+      <div class="sectionTitle">🎯 LIQUIDITY HUNTER SIGNAL GENERATOR (LIVE)</div>
       <div class="setupTop">
         <div class="coin" id="coin">SCANNING...</div>
         <div class="sideBadge" id="sideBadge">WAIT</div>
@@ -77,6 +77,10 @@
         <div class="metric"><div class="lab">Hard Confirmation</div><div class="metricVal yellow" id="hardConfirm">—</div></div>
         <div class="metric"><div class="lab">Research Mode</div><div class="metricVal" id="researchMode">—</div></div>
         <div class="metric"><div class="lab">Flow Persistence</div><div class="metricVal" id="flowPersist">—</div></div>
+        <div class="metric"><div class="lab">Liquidity Target</div><div class="metricVal good" id="liqTarget">—</div></div>
+        <div class="metric"><div class="lab">Up Pool Score</div><div class="metricVal good" id="liqUp">—</div></div>
+        <div class="metric"><div class="lab">Down Pool Score</div><div class="metricVal bad" id="liqDown">—</div></div>
+        <div class="metric"><div class="lab">Target Persistence</div><div class="metricVal" id="liqPersist">—</div></div>
       </div>
     </div>
 
@@ -116,8 +120,8 @@
   </div>
 
   <div class="watchGrid">
-    <div class="card"><div class="sectionTitle good">🟢 TOP MOMENTUM — LONG CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>Bias</th><th>RSI15</th><th>Rank</th><th>Volume</th><th>ATR%</th><th>Slope%</th><th>State</th></tr></thead><tbody id="longTable"></tbody></table></div><div class="watchGraph" id="longGraph"></div></div>
-    <div class="card"><div class="sectionTitle bad">🔴 TOP MOMENTUM — SHORT CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>Bias</th><th>RSI15</th><th>Rank</th><th>Volume</th><th>ATR%</th><th>Slope%</th><th>State</th></tr></thead><tbody id="shortTable"></tbody></table></div><div class="watchGraph" id="shortGraph"></div></div>
+    <div class="card"><div class="sectionTitle good">🟢 TOP BUY-SIDE LIQUIDITY — LONG CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>Bias</th><th>RSI15</th><th>Rank</th><th>UP Liq</th><th>DOWN Liq</th><th>Dom.</th><th>State</th></tr></thead><tbody id="longTable"></tbody></table></div><div class="watchGraph" id="longGraph"></div></div>
+    <div class="card"><div class="sectionTitle bad">🔴 TOP SELL-SIDE LIQUIDITY — SHORT CANDIDATES</div><div class="tableWrap"><table><thead><tr><th>#</th><th>Coin</th><th>Bias</th><th>RSI15</th><th>Rank</th><th>UP Liq</th><th>DOWN Liq</th><th>Dom.</th><th>State</th></tr></thead><tbody id="shortTable"></tbody></table></div><div class="watchGraph" id="shortGraph"></div></div>
   </div>
 
   <div class="perfGrid">
@@ -195,10 +199,10 @@
 
 
   <div class="card history" id="auditMainCard">
-    <div class="sectionTitle purple">🧪 V6 RESEARCH RESULT — FLOW / DIRECTION / ACTIVE RISK</div>
+    <div class="sectionTitle purple">🧪 V7 LIQUIDITY HUNTER RESULT — TARGET / FLOW / ACTIVE RISK</div>
 
     <div class="perfInner" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
-      <div class="perfTile"><div class="lab">Active Build</div><div class="perfValue" id="auditBuild" style="font-size:13px">WAITING V6</div></div>
+      <div class="perfTile"><div class="lab">Active Build</div><div class="perfValue" id="auditBuild" style="font-size:13px">WAITING V7</div></div>
       <div class="perfTile"><div class="lab">Closed</div><div class="perfValue" id="auditClosed">0</div></div>
       <div class="perfTile"><div class="lab">Wins</div><div class="perfValue good" id="auditWins">0</div></div>
       <div class="perfTile"><div class="lab">Losses</div><div class="perfValue bad" id="auditLosses">0</div></div>
@@ -231,18 +235,18 @@
           </tr>
         </thead>
         <tbody id="auditTable">
-          <tr><td colspan="8">Waiting for V6 research-flow trades...</td></tr>
+          <tr><td colspan="8">Waiting for V7 liquidity-hunter trades...</td></tr>
         </tbody>
       </table>
     </div>
     <div class="muted" style="font-size:9px;margin-top:8px">
-      This section uses only the active V6 research-flow strategy bucket. Older strategy trades remain preserved but are not counted here.
+      This section uses only the active V7 liquidity-hunter strategy bucket. Older strategy trades remain preserved but are not counted here.
     </div>
   </div>
 
 
   <div class="card history" id="legacyCard">
-    <div class="sectionTitle yellow">🗂 LEGACY CLOSED TRADES — NOT COUNTED IN V6</div>
+    <div class="sectionTitle yellow">🗂 LEGACY CLOSED TRADES — NOT COUNTED IN V7</div>
     <div class="perfInner" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
       <div class="perfTile"><div class="lab">Legacy Closed</div><div class="perfValue" id="legacyTotal">0</div></div>
       <div class="perfTile"><div class="lab">Legacy Wins</div><div class="perfValue good" id="legacyWins">0</div></div>
@@ -262,7 +266,7 @@
       </table>
     </div>
     <div class="muted" style="font-size:9px;margin-top:8px">
-      Legacy rows stay visible for audit/history only. They never change V6 win rate, V6 P/L, or V6 capital.
+      Legacy rows stay visible for audit/history only. They never change V7 win rate, V7 P/L, or V7 capital.
     </div>
   </div>
 
@@ -316,8 +320,12 @@ function showBest(c,gen){
     $("scoreFill").style.width="0%";
     $("setupText").textContent=(gen&&gen.reason)||"No research setup ready";
     $("hardConfirm").textContent="NOT YET";
-    $("researchMode").textContent=(gen&&gen.research_mode)||"HTF FLOW MOMENTUM";
+    $("researchMode").textContent=(gen&&gen.research_mode)||"LIQUIDITY STOP-POOL HUNTER";
     $("flowPersist").textContent=(gen&&gen.flow_persistence)||"0/0";
+    $("liqTarget").textContent=fmt(gen&&gen.liquidity_target);
+    $("liqUp").textContent=Number((gen&&gen.liquidity_up_score)||0).toFixed(2);
+    $("liqDown").textContent=Number((gen&&gen.liquidity_down_score)||0).toFixed(2);
+    $("liqPersist").textContent=(gen&&gen.liquidity_persistence)||"0/0";
     return;
   }
   const sc=Number(c.score||0),buy=String(c.signal).toUpperCase()==="BUY",hard=c.hard_confirm===true||String(c.hard_confirm).toLowerCase()==="true",ready=sc>=85&&hard,r=c.risk_label||risk(sc);
@@ -325,8 +333,12 @@ function showBest(c,gen){
   $("riskBadge").textContent="RISK LEVEL: "+r+(r==="STRONG"?" ●":"");$("riskBadge").className="riskBadge "+riskClass(r);$("score").textContent=sc;$("scoreFill").style.width=Math.min(100,Math.max(0,sc))+"%";
   $("setupText").textContent=ready?"TRADE READY — hard confirmation passed":"Watching for confirmation...";$("entry").textContent=fmt(c.price);$("tp").textContent=fmt(c.tp);$("sl").textContent=fmt(c.sl);$("trend").textContent=c.trend_5m==="BULL"?"BULLISH":c.trend_5m==="BEAR"?"BEARISH":"—";
   $("hardConfirm").textContent=hard?"YES ✅":"NOT YET";$("hardConfirm").className="metricVal "+(hard?"good":"yellow");
-  $("researchMode").textContent=c.research_mode||"HTF FLOW MOMENTUM";
+  $("researchMode").textContent=c.research_mode||"LIQUIDITY STOP-POOL HUNTER";
   $("flowPersist").textContent=String(c.flow_persistence_aligned||0)+"/"+String(c.flow_persistence_required||0);
+  $("liqTarget").textContent=fmt(c.liquidity_target_price);
+  $("liqUp").textContent=Number(c.liquidity_up_score||0).toFixed(2);
+  $("liqDown").textContent=Number(c.liquidity_down_score||0).toFixed(2);
+  $("liqPersist").textContent=String(c.liquidity_persistence_aligned||0)+"/"+String(c.liquidity_persistence_required||0);
   const e=N(c.price),tp=N(c.tp),sl=N(c.sl);$("rr").textContent=(e!==null&&tp!==null&&sl!==null&&Math.abs(e-sl)>0)?"1 : "+(Math.abs(tp-e)/Math.abs(e-sl)).toFixed(2):"—";
   loadChart(c.symbol);
 }
@@ -362,18 +374,7 @@ function heatmap(longs,shorts){
 function liqText(x){const b=Number(x.book_imb||0);return b>=.20?"HIGH BUY":b>=.05?"MED BUY":b<=-.20?"HIGH SELL":b<=-.05?"MED SELL":"MIXED"}
 function table(id,rows,longSide){
   rows=rows||[];
-  $(id).innerHTML=rows.length?rows.slice(0,10).map((x,i)=>{
-    const bias=String(x.bias||"WAIT").toUpperCase();
-    const cls=bias==="BUY"?"good":bias==="SELL"?"bad":"yellow";
-    return `<tr>
-      <td>${i+1}</td><td><b>${x.symbol||"—"}</b></td>
-      <td class="${cls}">${bias}</td>
-      <td>${fmt(x.rsi_15m,1)}</td><td>${fmt(x.rank,1)}</td>
-      <td>${fmt(x.vol_ratio_15m,2)}x</td><td>${fmt(x.atr_15m_pct,3)}</td>
-      <td>${fmt(x.ema20_slope_15m,4)}</td>
-      <td class="${cls}">${bias===(longSide?"BUY":"SELL")?"WATCH":"WAIT"}</td>
-    </tr>`;
-  }).join(""):`<tr><td colspan="9">Waiting for momentum candidates...</td></tr>`;
+  $(id).innerHTML=rows.length?rows.slice(0,10).map((x,i)=>{const b=String(x.bias||"WAIT").toUpperCase(),state=b==="BUY"?"HUNT UP":b==="SELL"?"HUNT DOWN":"WAIT";return `<tr><td>${i+1}</td><td><b>${x.symbol||"—"}</b></td><td class="${b==="BUY"?"good":b==="SELL"?"bad":"yellow"}">${b}</td><td>${fmt(x.rsi_15m,1)}</td><td>${fmt(x.rank,0)}</td><td class="good">${Number(x.liquidity_up_score||0).toFixed(2)}</td><td class="bad">${Number(x.liquidity_down_score||0).toFixed(2)}</td><td>${Number(x.liquidity_dominance||0).toFixed(2)}x</td><td class="${b==="BUY"?"good":b==="SELL"?"bad":"yellow"}">${state}</td></tr>`}).join(""):`<tr><td colspan="9">Waiting for liquidity-target candidates...</td></tr>`;
 }
 function graph(id,rows,longSide){const vals=(rows||[]).map(x=>Number(x.rsi_15m)).filter(Number.isFinite);if(!vals.length){$(id).innerHTML="";return}const W=650,H=85,p=8,pts=vals.map((v,i)=>`${p+(W-2*p)*(i/Math.max(1,vals.length-1))},${H-p-(H-2*p)*((Math.max(20,Math.min(80,v))-20)/60)}`).join(" "),c=longSide?"#42ef8d":"#ff525f";$(id).innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="#385348" stroke-dasharray="5 5"/><polyline points="${pts}" fill="none" stroke="${c}" stroke-width="3"/></svg>`}
 
@@ -465,7 +466,7 @@ function auditMain(d){
   const build=d.active_build_marker
     || ((d.strategy_version||"")+" | "+(d.build_version||""));
 
-  $("auditBuild").textContent=build||"WAITING V6";
+  $("auditBuild").textContent=build||"WAITING V7";
   $("auditClosed").textContent=Number(p.total_trades||0);
   $("auditWins").textContent=Number(p.wins||0);
   $("auditLosses").textContent=Number(p.losses||0);
@@ -510,7 +511,7 @@ function auditMain(d){
 
   $("auditMainProblem").textContent=
     problemCandidates[0][1]>0 ? problemCandidates[0][0] :
-    (closed.length ? "NORMAL / MIXED" : "NEED NEW V6 TRADES");
+    (closed.length ? "NORMAL / MIXED" : "NEED NEW V7 TRADES");
 
   $("auditTable").innerHTML=items.length
     ? items.slice(0,12).map(x=>{
@@ -530,7 +531,7 @@ function auditMain(d){
           <td>${rs}</td>
         </tr>`;
       }).join("")
-    : `<tr><td colspan="8">No V6 research trades yet. Confirm the V6 build marker is live.</td></tr>`;
+    : `<tr><td colspan="8">No V7 liquidity-hunter trades yet. Confirm the V7 build marker is live.</td></tr>`;
 }
 
 let liveTimer=null;
@@ -553,6 +554,10 @@ async function refreshStatus(){
     $("genAction").textContent=gen.action||"WAIT";$("genAction").className="metricVal "+(gen.action==="LONG"?"good":gen.action==="SHORT"?"bad":"yellow");
     $("genPersist").textContent=gen.flow_persistence||"0/0";
     $("genReason").textContent=gen.reason||"—";
+    $("liqTarget").textContent=fmt(gen.liquidity_target);
+    $("liqUp").textContent=Number(gen.liquidity_up_score||0).toFixed(2);
+    $("liqDown").textContent=Number(gen.liquidity_down_score||0).toFixed(2);
+    $("liqPersist").textContent=gen.liquidity_persistence||"0/0";
     const old=currentBest&&currentBest.symbol;showBest(d.best_candidate,gen);if(d.best_candidate&&(!old||old!==d.best_candidate.symbol))refreshLiveMarket();
     const w=d.research_watchlist||{},L=w.long||[],S=w.short||[];table("longTable",L,true);table("shortTable",S,false);graph("longGraph",L,true);graph("shortGraph",S,false);heatmap(L,S);
     scorePerformance(d.score_performance||{});
