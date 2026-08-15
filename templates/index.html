@@ -240,6 +240,32 @@
     </div>
   </div>
 
+
+  <div class="card history" id="legacyCard">
+    <div class="sectionTitle yellow">🗂 LEGACY CLOSED TRADES — NOT COUNTED IN V6</div>
+    <div class="perfInner" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px">
+      <div class="perfTile"><div class="lab">Legacy Closed</div><div class="perfValue" id="legacyTotal">0</div></div>
+      <div class="perfTile"><div class="lab">Legacy Wins</div><div class="perfValue good" id="legacyWins">0</div></div>
+      <div class="perfTile"><div class="lab">Legacy Losses</div><div class="perfValue bad" id="legacyLosses">0</div></div>
+    </div>
+    <div class="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Closed</th><th>Version</th><th>Coin</th><th>Side</th>
+            <th>Result</th><th>Entry</th><th>Exit</th><th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="legacyTable">
+          <tr><td colspan="8">No legacy closed trades loaded yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="muted" style="font-size:9px;margin-top:8px">
+      Legacy rows stay visible for audit/history only. They never change V6 win rate, V6 P/L, or V6 capital.
+    </div>
+  </div>
+
   <div class="card history">
     <div class="sectionTitle yellow">💰 DAILY CAPITAL SUMMARY — RISK MANAGED</div>
     <div class="perfInner" style="grid-template-columns:repeat(6,1fr)">
@@ -405,6 +431,34 @@ function scorePerformance(sp){
 }
 
 
+
+function legacyTrades(d){
+  const lg=d.legacy_trades||{};
+  const items=Array.isArray(lg.items)?lg.items:[];
+  $("legacyTotal").textContent=Number(lg.total_closed||0);
+  $("legacyWins").textContent=Number(lg.wins||0);
+  $("legacyLosses").textContent=Number(lg.losses||0);
+
+  $("legacyTable").innerHTML=items.length
+    ? items.map(x=>{
+        const st=String(x.status||"").toUpperCase();
+        const side=String(x.signal||"").toUpperCase()==="BUY"?"LONG":"SHORT";
+        const cls=st==="WIN"?"good":st==="LOSS"?"bad":"yellow";
+        const closed=x.closed_time_utc?new Date(x.closed_time_utc).toLocaleString():"—";
+        return `<tr>
+          <td>${closed}</td>
+          <td>${x.strategy_version||"—"}</td>
+          <td><b>${x.symbol||"—"}</b></td>
+          <td class="${side==="LONG"?"good":"bad"}">${side}</td>
+          <td class="${cls}"><b>${st}</b></td>
+          <td>${fmt(x.entry)}</td>
+          <td>${fmt(x.exit_price)}</td>
+          <td>${x.exit_reason||"—"}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="8">No legacy closed trades loaded yet.</td></tr>`;
+}
+
 function auditMain(d){
   const items=Array.isArray(d.trade_audit)?d.trade_audit:[];
   const p=d.performance||{};
@@ -503,6 +557,7 @@ async function refreshStatus(){
     const w=d.research_watchlist||{},L=w.long||[],S=w.short||[];table("longTable",L,true);table("shortTable",S,false);graph("longGraph",L,true);graph("shortGraph",S,false);heatmap(L,S);
     scorePerformance(d.score_performance||{});
     auditMain(d);
+    legacyTrades(d);
     const f=d.forming_performance||{};$("fTotal").textContent=f.total_setups||0;$("fWins").textContent=f.wins||0;$("fLosses").textContent=f.losses||0;$("fOpen").textContent=f.open||0;$("fRate").textContent=Number(f.win_rate||0).toFixed(2)+"%";$("fAvg").textContent=Number(f.avg_score||0).toFixed(1);
     const p=d.performance||{};$("sTotal").textContent=p.total_trades||0;$("sWins").textContent=p.wins||0;$("sLosses").textContent=p.losses||0;$("sOpen").textContent=p.open_trades||0;$("sRate").textContent=Number(p.win_rate||0).toFixed(2)+"%";history(d.signals||[]);
     const c=d.capital_summary||d.daily_capital||d.capital||{};
