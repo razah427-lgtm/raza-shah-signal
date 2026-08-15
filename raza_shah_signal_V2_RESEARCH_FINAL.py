@@ -25,7 +25,7 @@ from flask import (
 )
 
 # ============================================================
-# RAZA SHAH SIGNAL — V3 SMART MONEY TP/SL
+# RAZA SHAH SIGNAL — V6 RESEARCH FLOW / MOMENTUM
 # BITGET USDT-M FUTURES
 # SIGNAL ONLY — NO AUTO ORDERS
 #
@@ -40,9 +40,9 @@ from flask import (
 # -> PAPER SIGNAL
 # ============================================================
 
-STRATEGY_VERSION = "V5_REVERSAL_ACTIVE_MANAGER_20260815"
-BUILD_VERSION = "V5_SELECTION_ACTIVE_TPSL_1"
-REVERSAL_TEST_START_UTC = "2026-08-15T08:37:00+00:00"  # KSA 11:37, new reversal forward-test start
+STRATEGY_VERSION = "V6_RESEARCH_FLOW_MOMENTUM_20260815"
+BUILD_VERSION = "V6_RESEARCH_SIGNAL_GENERATOR_1"
+REVERSAL_TEST_START_UTC = "2026-08-15T10:53:00+00:00"  # V6 research-flow clean forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -125,16 +125,23 @@ HTF_CONFLICT_FILTER_ENABLED = (
 CHOCH_LOOKBACK_5M = int(os.getenv("CHOCH_LOOKBACK_5M", "3"))
 TRADE_AUDIT_LIMIT = int(os.getenv("TRADE_AUDIT_LIMIT", "50"))
 
-# V5 selection quality:
-# Require RSI to actually reclaim back inside the normal zone after an extreme,
-# and require BOTH live flow + order-book pressure to agree with the trade.
-RSI_RECLAIM_REQUIRED = (
-    os.getenv("RSI_RECLAIM_REQUIRED", "true").strip().lower()
-    in ("1", "true", "yes", "on")
-)
+# V6 research-flow selection.
+# Direction comes from persistent higher-timeframe momentum + flow, not RSI reversal.
+# RSI is only an anti-chase / exhaustion veto.
 ENTRY_FLOW_MIN = float(os.getenv("ENTRY_FLOW_MIN", "0.12"))
 ENTRY_BOOK_MIN = float(os.getenv("ENTRY_BOOK_MIN", "0.12"))
 ENTRY_WHALE_HOSTILE_FLOOR = float(os.getenv("ENTRY_WHALE_HOSTILE_FLOOR", "-0.10"))
+FLOW_HISTORY_MAX = int(os.getenv("FLOW_HISTORY_MAX", "4"))
+FLOW_PERSIST_REQUIRED = int(os.getenv("FLOW_PERSIST_REQUIRED", "2"))
+FLOW_PERSIST_FLOW_MIN = float(os.getenv("FLOW_PERSIST_FLOW_MIN", "0.08"))
+FLOW_PERSIST_BOOK_MIN = float(os.getenv("FLOW_PERSIST_BOOK_MIN", "0.05"))
+OI_CONTINUATION_FLOOR = float(os.getenv("OI_CONTINUATION_FLOOR", "-0.05"))
+RSI_LONG_CHASE_MAX = float(os.getenv("RSI_LONG_CHASE_MAX", "74"))
+RSI_SHORT_CHASE_MIN = float(os.getenv("RSI_SHORT_CHASE_MIN", "26"))
+CRYPTO_ONLY_FILTER = (
+    os.getenv("CRYPTO_ONLY_FILTER", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 
 # Net reward model after estimated round-trip fee/slippage.
 NET_RR_TARGET = float(os.getenv("NET_RR_TARGET", "1.80"))
@@ -381,7 +388,7 @@ state = {
     "build_version": BUILD_VERSION,
     "exchange": "BITGET",
     "data_source": "Bitget USDT-M Futures",
-    "status": "Starting V5 Active Manager...",
+    "status": "Starting V6 Research Signal Generator...",
     "last_scan": None,
     "next_scan": None,
     "alerts_last_scan": 0,
@@ -393,6 +400,9 @@ state = {
     "market_regime": None,
     "blocked_counts": {},
     "watchlist": [],
+    "research_watchlist": {"long": [], "short": []},
+    "signal_generator": {"action": "WAIT", "reason": "STARTING"},
+    "flow_history": {},
     "oi_snapshot": {},
 }
 
@@ -541,29 +551,49 @@ def bitget_get(path, params=None, timeout=None, retries=3):
 
 
 def top_symbols():
-    scan_log("TOP SYMBOLS: loading Bitget USDT-M Futures tickers...")
+    """
+    Load the most liquid genuine crypto USDT perpetuals.
+
+    Bitget's USDT-FUTURES product can include RWA/stock/index-linked symbols.
+    V6 explicitly uses the contract-config `isRwa` flag so instruments such as
+    equity/index-linked perpetuals do not contaminate the crypto strategy test.
+    """
+    scan_log("TOP SYMBOLS: loading crypto-only Bitget USDT-M Futures...")
 
     tickers = bitget_get(
         "/api/v2/mix/market/tickers",
+        {"productType": BITGET_PRODUCT_TYPE},
+    )
+    contracts = bitget_get(
+        "/api/v2/mix/market/contracts",
         {"productType": BITGET_PRODUCT_TYPE},
     )
 
     if not isinstance(tickers, list):
         raise RuntimeError("Bitget ticker list unavailable")
 
+    contract_map = {}
+    if isinstance(contracts, list):
+        for c in contracts:
+            if not isinstance(c, dict):
+                continue
+            sym = str(c.get("symbol") or "").upper()
+            if sym:
+                contract_map[sym] = c
+
     rows = []
+    excluded_rwa = 0
+    excluded_status = 0
 
     for x in tickers:
         try:
             symbol = str(x.get("symbol") or "").upper()
-
             last_price = float(
                 x.get("lastPr")
                 or x.get("last")
                 or x.get("close")
                 or 0
             )
-
             quote_volume = float(
                 x.get("quoteVolume")
                 or x.get("usdtVolume")
@@ -573,8 +603,24 @@ def top_symbols():
 
             if not symbol.endswith("USDT"):
                 continue
-
             if last_price <= 0 or quote_volume <= 0:
+                continue
+
+            cfg = contract_map.get(symbol, {})
+            is_rwa = str(cfg.get("isRwa") or "NO").upper()
+            status = str(cfg.get("symbolStatus") or "normal").lower()
+            symbol_type = str(cfg.get("symbolType") or "perpetual").lower()
+            quote_coin = str(cfg.get("quoteCoin") or "USDT").upper()
+
+            if CRYPTO_ONLY_FILTER and is_rwa == "YES":
+                excluded_rwa += 1
+                continue
+            if quote_coin and quote_coin != "USDT":
+                continue
+            if symbol_type and symbol_type != "perpetual":
+                continue
+            if status not in ("normal", "listed", ""):
+                excluded_status += 1
                 continue
 
             rows.append((symbol, quote_volume))
@@ -586,74 +632,13 @@ def top_symbols():
     symbols = [symbol for symbol, _ in rows[:TOP_COINS]]
 
     if not symbols:
-        raise RuntimeError("No Bitget top futures symbols loaded")
+        raise RuntimeError("No crypto-only Bitget top futures symbols loaded")
 
-    scan_log(f"TOP SYMBOLS LOADED: {len(symbols)}")
-    return symbols
-
-
-def _bitget_granularity(interval):
-    mapping = {
-        "1m": "1m",
-        "3m": "3m",
-        "5m": "5m",
-        "15m": "15m",
-        "30m": "30m",
-        "1h": "1H",
-        "2h": "2H",
-        "4h": "4H",
-        "6h": "6H",
-        "12h": "12H",
-        "1d": "1D",
-    }
-    return mapping.get(str(interval), str(interval))
-
-
-def klines(symbol, interval="5m", limit=100):
-    data = bitget_get(
-        "/api/v2/mix/market/candles",
-        {
-            "symbol": symbol,
-            "productType": BITGET_PRODUCT_TYPE,
-            "granularity": _bitget_granularity(interval),
-            "limit": str(limit),
-        },
+    scan_log(
+        f"TOP CRYPTO SYMBOLS LOADED: {len(symbols)} | "
+        f"RWA excluded={excluded_rwa} | status excluded={excluded_status}"
     )
-
-    if not isinstance(data, list):
-        return []
-
-    return sorted(data, key=lambda x: int(x[0]))
-
-
-def candle_dicts(symbol, interval, limit=100, drop_live=True):
-    rows = klines(symbol, interval, limit)
-
-    out = []
-    for x in rows:
-        try:
-            if len(x) < 7:
-                continue
-
-            out.append({
-                "ts": int(x[0]),
-                "open": float(x[1]),
-                "high": float(x[2]),
-                "low": float(x[3]),
-                "close": float(x[4]),
-                "base_volume": float(x[5]),
-                "quote_volume": float(x[6]),
-            })
-        except Exception:
-            pass
-
-    # Public REST candle can include the currently forming candle.
-    # V2 uses completed bars only for HTF / setup decisions.
-    if drop_live and len(out) >= 3:
-        out = out[:-1]
-
-    return out
-
+    return symbols
 
 def current_price(symbol):
     data = bitget_get(
@@ -2038,13 +2023,14 @@ def _build_entry_context(row):
         "signal": side,
 
         # Direction decision
-        "direction_basis": (
-            "15M_OVERSOLD_TURN_UP"
+        "direction_basis": row.get("direction_basis") or (
+            "HTF_FLOW_MOMENTUM_BUY"
             if side == "BUY"
-            else "15M_OVERBOUGHT_TURN_DOWN"
+            else "HTF_FLOW_MOMENTUM_SELL"
             if side == "SELL"
             else "UNKNOWN"
         ),
+        "research_mode": row.get("research_mode"),
         "rsi_buy_threshold": RSI_OVERSOLD,
         "rsi_sell_threshold": RSI_OVERBOUGHT,
         "rsi_turn_min": RSI_TURN_MIN,
@@ -2073,6 +2059,13 @@ def _build_entry_context(row):
         "book_imb": row.get("book_imb"),
         "whale_delta": row.get("whale_delta"),
         "oi_change_pct": row.get("oi_change_pct"),
+        "flow_persistence_samples": row.get("flow_persistence_samples"),
+        "flow_persistence_aligned": row.get("flow_persistence_aligned"),
+        "flow_persistence_required": row.get("flow_persistence_required"),
+        "flow_persistent": row.get("flow_persistent"),
+        "avg_flow_dir": row.get("avg_flow_dir"),
+        "avg_book_dir": row.get("avg_book_dir"),
+        "btc_regime": row.get("btc_regime"),
         "spread_bps": row.get("spread_bps"),
         "vol_ratio": row.get("vol_ratio"),
         "atr_15m_pct": row.get("atr_15m_pct"),
@@ -2104,10 +2097,10 @@ def _build_entry_context(row):
 
 def add_open_trade(row):
     """
-    V4 audit-safe trade insert.
+    Research audit-safe trade insert.
 
     Important:
-    - Same STRATEGY_VERSION is preserved so the forward-test does not reset.
+    - Current STRATEGY_VERSION creates a clean V6 forward-test bucket.
     - The complete entry context is written in the SAME database INSERT as
       the trade itself and is immediately read back for verification.
     - A PostgreSQL advisory transaction lock prevents two Render workers /
@@ -2346,6 +2339,16 @@ def performance():
         else:
             loss += abs(pl)
 
+    avg_win = (profit / wins) if wins else 0.0
+    avg_loss = (loss / losses) if losses else 0.0
+    expectancy = ((profit - loss) / total) if total else 0.0
+    if loss > 0:
+        profit_factor = profit / loss
+    elif profit > 0:
+        profit_factor = 999.0
+    else:
+        profit_factor = 0.0
+
     return {
         "strategy_version": STRATEGY_VERSION,
         "total_trades": total,
@@ -2363,6 +2366,10 @@ def performance():
         "total_profit": round(profit, 2),
         "total_loss": round(loss, 2),
         "net_pl": round(profit - loss, 2),
+        "profit_factor": round(profit_factor, 3),
+        "expectancy": round(expectancy, 3),
+        "avg_win": round(avg_win, 3),
+        "avg_loss": round(avg_loss, 3),
     }
 
 
@@ -2499,7 +2506,7 @@ def capital_summary():
             else 0.0
         ),
         "closed_trades_today": len(rows),
-        "source": "V5 REVERSAL + ACTIVE TP/SL MANAGER",
+        "source": "V6 RESEARCH FLOW MOMENTUM + ACTIVE TP/SL MANAGER",
         "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
@@ -2965,6 +2972,7 @@ def check_open_trades():
                         px,
                         diagnosis,
                         exit_reason,
+                        str(r.get("strategy_version") or ""),
                     )
                 )
 
@@ -2990,6 +2998,7 @@ def check_open_trades():
             px,
             diagnosis,
             exit_reason,
+            row_strategy_version,
         ) in closed_messages:
 
             icon = "✅" if result == "WIN" else "❌"
@@ -3014,8 +3023,31 @@ def check_open_trades():
                 diagnosis["reasons"]
             )
 
+            current_strategy_close = (
+                row_strategy_version == STRATEGY_VERSION
+            )
+
+            if current_strategy_close:
+                stats_text = (
+                    f"\n\n📊 V6 RESEARCH FLOW\n"
+                    f"Trades: {p['total_trades']}\n"
+                    f"Wins: {p['wins']}\n"
+                    f"Losses: {p['losses']}\n"
+                    f"Winning: {p['win_rate']:.2f}%\n"
+                    f"Net P/L: ${p['net_pl']:.2f}\n"
+                )
+                version_label = "V6"
+            else:
+                # Old open paper trades are allowed to finish, but must never
+                # be presented as V6 results.
+                stats_text = (
+                    f"\n\nLegacy strategy close only. "
+                    f"Not counted in V6 performance.\n"
+                )
+                version_label = f"LEGACY {row_strategy_version}"
+
             telegram_async(
-                f"{icon} V5 {label} — {symbol}\n"
+                f"{icon} {version_label} {label} — {symbol}\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Side: {side}\n"
                 f"Entry: {entry:.8g}\n"
@@ -3023,17 +3055,10 @@ def check_open_trades():
                 f"Final TP: {tp:.8g}\n"
                 f"Final SL: {sl:.8g}\n"
                 f"Exit Reason: {exit_reason}\n"
-                f"MFE: "
-                f"{diagnosis['mfe_pct']:.3f}%\n"
-                f"MAE: "
-                f"{diagnosis['mae_pct']:.3f}%\n"
-                f"Diagnosis: {reason_text}\n\n"
-                f"📊 V5 ACTIVE MANAGER\n"
-                f"Trades: {p['total_trades']}\n"
-                f"Wins: {p['wins']}\n"
-                f"Losses: {p['losses']}\n"
-                f"Winning: {p['win_rate']:.2f}%\n"
-                f"Net P/L: ${p['net_pl']:.2f}\n"
+                f"MFE: {diagnosis['mfe_pct']:.3f}%\n"
+                f"MAE: {diagnosis['mae_pct']:.3f}%\n"
+                f"Diagnosis: {reason_text}"
+                f"{stats_text}"
                 f"🔗 {APP_URL}"
             )
 
@@ -3278,40 +3303,51 @@ def reversal_quality_score(side, rctx, setup, trigger, delta, book, spread, oi, 
 # ============================================================
 
 def light_metrics(symbol):
-    c15 = candle_dicts(symbol, "15m", 60)
-
-    if len(c15) < 30:
+    c15 = candle_dicts(symbol, "15m", 80)
+    if len(c15) < 50:
         return None
 
     closes = [x["close"] for x in c15]
-    r15 = rsi(closes, 14)
-    r_prev = rsi(closes[:-1], 14) if len(closes) > 15 else r15
-    vr = volume_ratio(c15, 20)
-
-    a = atr_value(c15[-40:], 14)
     price = closes[-1]
+    r15 = rsi(closes, 14)
+    vr = volume_ratio(c15, 20)
+    a = atr_value(c15[-40:], 14)
     atr_pct = a / price if price > 0 else 0.0
 
-    # Reversal-first ranking: extremes + active turning + volume/volatility.
-    extreme_strength = max(0.0, r15 - 50.0, 50.0 - r15)
-    turning_bonus = abs(r15 - r_prev) * 4.0
+    e20 = ema(closes[-70:], 20)
+    e50 = ema(closes[-80:], 50)
+    e20_prev = ema(closes[-70:-4], 20)
+    slope = ((e20 / e20_prev) - 1.0) if e20_prev > 0 else 0.0
+    separation = ((e20 - e50) / price) if price > 0 else 0.0
 
+    if e20 > e50 and price > e20 and slope > 0:
+        bias = "BUY"
+    elif e20 < e50 and price < e20 and slope < 0:
+        bias = "SELL"
+    else:
+        bias = "WAIT"
+
+    # Momentum-first discovery: trend separation + slope + tradable activity.
+    trend_strength = abs(separation) * 100000.0
+    slope_strength = abs(slope) * 100000.0
     rank = (
-        extreme_strength * 2.0
-        + turning_bonus
-        + min(vr, 3.0) * 8
-        + min(atr_pct * 10000, 100)
+        trend_strength
+        + slope_strength
+        + min(vr, 3.0) * 10.0
+        + min(atr_pct * 10000.0, 80.0)
     )
 
     return {
         "price": price,
         "rsi_15m": round(r15, 2),
-        "rsi_prev_15m": round(float(r_prev), 2),
         "vol_ratio_15m": vr,
         "atr_15m_pct": atr_pct,
+        "ema20_15m": e20,
+        "ema50_15m": e50,
+        "ema20_slope_15m": slope,
+        "trend_bias": bias,
         "rank": rank,
     }
-
 
 def _light_scan_one(symbol):
     try:
@@ -3336,115 +3372,258 @@ def _light_scan_one(symbol):
         )
 
 # ============================================================
-# V2 DEEP SCAN
+# V6 RESEARCH FLOW / MOMENTUM HELPERS
+# ============================================================
+
+def _directional(value, side):
+    v = float(value or 0)
+    return v if side == "BUY" else -v
+
+
+def update_flow_history(symbol, delta, book, oi, whale_delta):
+    snap = {
+        "ts": time.time(),
+        "delta": float(delta or 0),
+        "book": float(book or 0),
+        "oi": float(oi or 0),
+        "whale": float(whale_delta or 0),
+    }
+    with state_lock:
+        store = state.setdefault("flow_history", {})
+        hist = list(store.get(symbol) or [])
+        hist.append(snap)
+        hist = hist[-max(2, FLOW_HISTORY_MAX):]
+        store[symbol] = hist
+    return hist
+
+
+def flow_persistence(side, history):
+    hist = list(history or [])[-max(2, FLOW_HISTORY_MAX):]
+    aligned = 0
+    flow_vals = []
+    book_vals = []
+    oi_vals = []
+
+    for h in hist:
+        f = _directional(h.get("delta"), side)
+        b = _directional(h.get("book"), side)
+        flow_vals.append(f)
+        book_vals.append(b)
+        oi_vals.append(float(h.get("oi") or 0))
+        if f >= FLOW_PERSIST_FLOW_MIN and b >= FLOW_PERSIST_BOOK_MIN:
+            aligned += 1
+
+    return {
+        "samples": len(hist),
+        "aligned": aligned,
+        "required": FLOW_PERSIST_REQUIRED,
+        "persistent": aligned >= FLOW_PERSIST_REQUIRED,
+        "avg_flow_dir": (sum(flow_vals) / len(flow_vals)) if flow_vals else 0.0,
+        "avg_book_dir": (sum(book_vals) / len(book_vals)) if book_vals else 0.0,
+        "avg_oi": (sum(oi_vals) / len(oi_vals)) if oi_vals else 0.0,
+    }
+
+
+def research_live_confirmation(side, delta, book, spread, oi, whale_delta, persistence):
+    reasons = []
+    flow_dir = _directional(delta, side)
+    book_dir = _directional(book, side)
+    whale_dir = _directional(whale_delta, side)
+
+    if float(spread) > MAX_SPREAD_BPS:
+        reasons.append("SPREAD")
+    if flow_dir < ENTRY_FLOW_MIN:
+        reasons.append("FLOW_NOT_CONFIRMED")
+    if book_dir < ENTRY_BOOK_MIN:
+        reasons.append("BOOK_NOT_CONFIRMED")
+    if not persistence.get("persistent"):
+        reasons.append("FLOW_NOT_PERSISTENT")
+    if float(oi) < OI_CONTINUATION_FLOOR:
+        reasons.append("OI_AGAINST_CONTINUATION")
+    if whale_dir < ENTRY_WHALE_HOSTILE_FLOOR:
+        reasons.append("WHALE_FLOW_AGAINST")
+
+    return len(reasons) == 0, reasons
+
+
+def research_quality_score(side, reg, st, setup, trigger, delta, book, spread, oi, whale, persistence, btc_regime):
+    score = 0
+
+    # Higher-timeframe direction / momentum: 30 points.
+    if (side == "BUY" and reg.get("regime") == "BULL") or (side == "SELL" and reg.get("regime") == "BEAR"):
+        score += 15
+
+    strength = int(st.get("strength") or 0)
+    if strength >= 80:
+        score += 15
+    elif strength >= 70:
+        score += 13
+    elif strength >= 60:
+        score += 11
+    else:
+        score += 8
+
+    # 15m continuation / liquidity location: 15 points.
+    setup_name = str(setup.get("setup") or "")
+    if setup_name == "BREAKOUT_RETEST":
+        score += 15
+    elif setup_name == "PULLBACK_CONTINUATION":
+        score += 13
+    elif setup_name in ("LOW_SWEEP_RECLAIM", "HIGH_SWEEP_REJECT"):
+        score += 12
+
+    # 5m execution timing: 10 points.
+    if trigger.get("valid"):
+        score += 10
+
+    # Persistent aggressive trading pressure: 15 points.
+    if persistence.get("persistent"):
+        score += 12
+    flow_dir = _directional(delta, side)
+    if flow_dir >= 0.30:
+        score += 3
+    elif flow_dir >= ENTRY_FLOW_MIN:
+        score += 2
+
+    # Order book: 8 points.
+    book_dir = _directional(book, side)
+    if book_dir >= 0.30:
+        score += 8
+    elif book_dir >= ENTRY_BOOK_MIN:
+        score += 6
+
+    # OI participation: 7 points.
+    if oi >= 0.15:
+        score += 7
+    elif oi > 0:
+        score += 5
+    elif oi >= OI_CONTINUATION_FLOOR:
+        score += 2
+
+    # Volume/activity: 5 points, never a standalone direction signal.
+    vr = float(setup.get("vol_ratio") or 0)
+    if vr >= 1.5:
+        score += 5
+    elif vr >= 1.1:
+        score += 4
+    elif vr >= MIN_VOL_RATIO:
+        score += 2
+
+    # Spread: 3 points.
+    if spread <= 0.5:
+        score += 3
+    elif spread <= 1.0:
+        score += 2
+    elif spread <= MAX_SPREAD_BPS:
+        score += 1
+
+    # Large-print flow: 4 points.
+    whale_dir = _directional(whale.get("whale_delta"), side)
+    if whale_dir >= 0.50:
+        score += 4
+    elif whale_dir >= 0.25:
+        score += 3
+    elif whale_dir >= 0:
+        score += 1
+
+    # BTC is context only; small ranking contribution.
+    btc = str((btc_regime or {}).get("regime") or "SIDEWAYS")
+    if (side == "BUY" and btc == "BULL") or (side == "SELL" and btc == "BEAR"):
+        score += 3
+    elif btc == "SIDEWAYS":
+        score += 1
+
+    return min(100, int(round(score)))
+
+
+# ============================================================
+# V6 DEEP SCAN — HTF MOMENTUM -> STRUCTURE -> PERSISTENT FLOW
 # ============================================================
 
 def _deep_scan_one(item):
     _, symbol, lm, btc_regime = item
 
     try:
-        # FINAL REVERSAL DIRECTION:
-        # overbought -> SELL, oversold -> BUY.
-        rctx = reversal_rsi_context(symbol)
-        side = rctx.get("side")
+        reg = regime_4h(symbol)
+        st = structure_1h(symbol)
 
-        if side not in ("BUY", "SELL"):
+        # PRIMARY DIRECTION = aligned higher-timeframe momentum.
+        if reg.get("regime") == "BULL" and st.get("structure") == "BULL_MOMENTUM":
+            side = "BUY"
+            direction_basis = "4H_BULL_1H_BULL_MOMENTUM"
+        elif reg.get("regime") == "BEAR" and st.get("structure") == "BEAR_MOMENTUM":
+            side = "SELL"
+            direction_basis = "4H_BEAR_1H_BEAR_MOMENTUM"
+        else:
             return {
                 "symbol": symbol,
-                "blocked": "RSI_NOT_REVERSING",
+                "blocked": "HTF_NOT_ALIGNED",
                 "score": 0,
                 "lm": lm,
-                "rsi": rctx,
-                "error": None,
-            }
-
-        # Keep 4H / 1H for dashboard/context only; they no longer command direction.
-        try:
-            reg = regime_4h(symbol)
-        except Exception as e:
-            reg = {"regime": "SIDEWAYS", "error": str(e)}
-
-        try:
-            st = structure_1h(symbol)
-        except Exception as e:
-            st = {"structure": "RANGE", "error": str(e)}
-
-        # V4: RSI defines the reversal candidate, but strong HTF trend can veto
-        # a dangerous counter-trend entry.
-        htf_conflict = (
-            (
-                side == "SELL"
-                and reg.get("regime") == "BULL"
-                and st.get("structure") == "BULL_MOMENTUM"
-            )
-            or
-            (
-                side == "BUY"
-                and reg.get("regime") == "BEAR"
-                and st.get("structure") == "BEAR_MOMENTUM"
-            )
-        )
-
-        if HTF_CONFLICT_FILTER_ENABLED and htf_conflict:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "HTF_TREND_CONFLICT",
-                "score": 0,
-                "lm": lm,
-                "rsi": rctx,
                 "regime": reg,
                 "structure": st,
                 "error": None,
             }
 
-        # Reversal must occur at a 15m liquidity sweep/reclaim/rejection.
-        setup = liquidity_setup_15m(symbol, side)
-        if not setup.get("valid") or not setup.get("sweep"):
+        # RSI is NOT direction. It only prevents chasing exhausted moves.
+        rsi15 = timeframe_rsi(symbol, "15m")
+        if side == "BUY" and rsi15 >= RSI_LONG_CHASE_MAX:
             return {
                 "symbol": symbol,
                 "side": side,
-                "blocked": "15M_REVERSAL_SWEEP",
+                "blocked": "RSI_LONG_OVEREXTENDED",
                 "score": 0,
                 "lm": lm,
-                "rsi": rctx,
+                "regime": reg,
+                "structure": st,
+                "rsi_15m": rsi15,
+                "error": None,
+            }
+        if side == "SELL" and rsi15 <= RSI_SHORT_CHASE_MIN:
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "RSI_SHORT_OVEREXTENDED",
+                "score": 0,
+                "lm": lm,
+                "regime": reg,
+                "structure": st,
+                "rsi_15m": rsi15,
+                "error": None,
+            }
+
+        # 15m structure must offer a continuation entry location in the HTF direction.
+        setup = liquidity_setup_15m(symbol, side)
+        if not setup.get("valid"):
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "15M_NO_CONTINUATION_SETUP",
+                "score": 0,
+                "lm": lm,
                 "regime": reg,
                 "structure": st,
                 "setup": setup,
+                "rsi_15m": rsi15,
                 "error": None,
             }
 
-        if setup["vol_ratio"] < MIN_VOL_RATIO:
+        if float(setup.get("vol_ratio") or 0) < MIN_VOL_RATIO:
             return {
                 "symbol": symbol,
                 "side": side,
                 "blocked": "LOW_VOLUME",
                 "score": 0,
                 "lm": lm,
-                "rsi": rctx,
                 "regime": reg,
                 "structure": st,
                 "setup": setup,
                 "error": None,
             }
 
-        # Unlike old V3, 5m confirmation is mandatory for a counter-move reversal.
-        trigger = entry_trigger_5m(symbol, side)
-        if not trigger.get("valid"):
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "5M_REVERSAL_TRIGGER",
-                "score": 0,
-                "lm": lm,
-                "rsi": rctx,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "trigger": trigger,
-                "error": None,
-            }
-
+        # Build persistent market-pressure history BEFORE the 5m trigger fires.
+        # This lets the scanner observe whether pressure survives across scans
+        # instead of starting history only after the final entry candle appears.
         heat = orderbook_heat_metrics(symbol)
         if not heat:
             return {
@@ -3455,21 +3634,67 @@ def _deep_scan_one(item):
                 "error": None,
             }
 
-        spread = heat["spread_bps"]
-        book = heat["book_imb"]
+        spread = float(heat["spread_bps"])
+        book = float(heat["book_imb"])
         whale = flow_metrics_detailed(symbol)
-        delta = whale["delta"]
-        buy = whale["buy"]
-        sell = whale["sell"]
-        oi = oi_change_pct(symbol)
+        delta = float(whale["delta"])
+        buy = float(whale["buy"])
+        sell = float(whale["sell"])
+        oi = float(oi_change_pct(symbol))
 
-        live_ok, live_reasons = live_confirmation(
-            side, delta, book, spread, oi,
-            whale_delta=whale.get("whale_delta", 0.0),
+        history = update_flow_history(
+            symbol,
+            delta,
+            book,
+            oi,
+            whale.get("whale_delta", 0.0),
+        )
+        persistence = flow_persistence(side, history)
+
+        # 5m execution timing is mandatory, but flow history is already building.
+        trigger = entry_trigger_5m(symbol, side)
+        if not trigger.get("valid"):
+            return {
+                "symbol": symbol,
+                "side": side,
+                "blocked": "5M_TRIGGER_WAIT",
+                "score": 0,
+                "lm": lm,
+                "regime": reg,
+                "structure": st,
+                "setup": setup,
+                "trigger": trigger,
+                "delta": delta,
+                "book": book,
+                "spread": spread,
+                "oi": oi,
+                "persistence": persistence,
+                "error": None,
+            }
+
+        live_ok, live_reasons = research_live_confirmation(
+            side,
+            delta,
+            book,
+            spread,
+            oi,
+            whale.get("whale_delta", 0.0),
+            persistence,
         )
 
-        q = reversal_quality_score(
-            side, rctx, setup, trigger, delta, book, spread, oi, whale=whale,
+        q = research_quality_score(
+            side,
+            reg,
+            st,
+            setup,
+            trigger,
+            delta,
+            book,
+            spread,
+            oi,
+            whale,
+            persistence,
+            btc_regime,
         )
 
         score_ok = q >= MIN_TRADE_SCORE
@@ -3479,7 +3704,11 @@ def _deep_scan_one(item):
 
         price = current_price(symbol)
         risk = dynamic_risk(
-            price, side, setup, heat=heat, whale=whale,
+            price,
+            side,
+            setup,
+            heat=heat,
+            whale=whale,
         )
 
         if risk is None:
@@ -3489,7 +3718,6 @@ def _deep_scan_one(item):
                 "blocked": "SMART_RISK_NO_ROOM",
                 "score": q,
                 "lm": lm,
-                "rsi": rctx,
                 "regime": reg,
                 "structure": st,
                 "setup": setup,
@@ -3498,33 +3726,37 @@ def _deep_scan_one(item):
                 "book": book,
                 "spread": spread,
                 "oi": oi,
+                "persistence": persistence,
                 "error": None,
             }
 
         candidate = {
             "time_utc": datetime.now(timezone.utc).isoformat(),
             "strategy_version": STRATEGY_VERSION,
+            "build_version": BUILD_VERSION,
             "exchange": "BITGET",
-            "data_source": "Bitget USDT-M Futures",
+            "data_source": "Bitget crypto-only USDT-M Futures",
             "symbol": symbol,
             "signal": side,
             "score": q,
             "risk_label": risk_label(q),
             "price": price,
 
+            "research_mode": "HTF_FLOW_MOMENTUM_CONTINUATION",
+            "direction_basis": direction_basis,
             "regime_4h": reg.get("regime", "SIDEWAYS"),
             "structure_1h": st.get("structure", "RANGE"),
+            "structure_1h_strength": st.get("strength"),
             "setup_15m": setup.get("setup", "NONE"),
             "trigger_5m": trigger.get("trigger", "WAIT"),
-            "rsi_15m": rctx.get("rsi_now"),
-            "rsi_prev": rctx.get("rsi_prev"),
-            "rsi_peak": rctx.get("rsi_peak"),
-            "rsi_trough": rctx.get("rsi_trough"),
-            "rsi_turn_amount": rctx.get("turn_amount"),
-            "reversal_reason": rctx.get("reason"),
-            "structure_1h_strength": st.get("strength"),
-            "sweep_penetration_pct": setup.get("sweep_penetration_pct", 0.0),
             "trigger_choch": trigger.get("choch", False),
+            "rsi_15m": round(float(rsi15), 2),
+            "rsi_prev": None,
+            "rsi_peak": None,
+            "rsi_trough": None,
+            "rsi_turn_amount": None,
+            "reversal_reason": "RSI_CONTEXT_ONLY",
+            "sweep_penetration_pct": setup.get("sweep_penetration_pct", 0.0),
 
             "flow_delta": delta,
             "buy_usd_60s": buy,
@@ -3532,29 +3764,27 @@ def _deep_scan_one(item):
             "spread_bps": spread,
             "book_imb": book,
             "oi_change_pct": oi,
+            "flow_persistence_samples": persistence.get("samples", 0),
+            "flow_persistence_aligned": persistence.get("aligned", 0),
+            "flow_persistence_required": persistence.get("required", FLOW_PERSIST_REQUIRED),
+            "flow_persistent": persistence.get("persistent", False),
+            "avg_flow_dir": persistence.get("avg_flow_dir", 0.0),
+            "avg_book_dir": persistence.get("avg_book_dir", 0.0),
+            "btc_regime": str((btc_regime or {}).get("regime") or "SIDEWAYS"),
 
             "atr_15m_pct": setup["atr_pct"],
             "vol_ratio": setup["vol_ratio"],
 
             "risk_pct": risk["risk_pct"],
-            "capital_risk_pct": risk.get(
-                "capital_risk_pct",
-                CAPITAL_RISK_PER_TRADE,
-            ),
-            "effective_leverage": risk.get(
-                "effective_leverage",
-                0.0,
-            ),
-            "position_notional": risk.get(
-                "position_notional",
-                0.0,
-            ),
+            "capital_risk_pct": risk.get("capital_risk_pct", CAPITAL_RISK_PER_TRADE),
+            "effective_leverage": risk.get("effective_leverage", 0.0),
+            "position_notional": risk.get("position_notional", 0.0),
             "rr": risk["rr"],
             "tp": risk["tp"],
             "sl": risk["sl"],
             "tp_source": risk.get("tp_source"),
             "sl_source": risk.get("sl_source"),
-            "whale_delta": risk.get("whale_delta", 0.0),
+            "whale_delta": risk.get("whale_delta", whale.get("whale_delta", 0.0)),
             "bid_wall_price": risk.get("bid_wall_price", 0.0),
             "ask_wall_price": risk.get("ask_wall_price", 0.0),
             "bid_wall_ratio": risk.get("bid_wall_ratio", 0.0),
@@ -3562,17 +3792,20 @@ def _deep_scan_one(item):
 
             "hard_confirm": trade_ready,
             "blocked_reasons": live_reasons,
-            "status": "TRADE READY" if trade_ready else "WAIT LIVE CONFIRMATION",
+            "status": "TRADE READY" if trade_ready else "WAIT RESEARCH CONFIRMATION",
         }
+
+        blocked = None
+        if not trade_ready:
+            blocked = live_reasons[0] if live_reasons else "QUALITY_SCORE"
 
         return {
             "symbol": symbol,
             "side": side,
             "score": q,
             "candidate": candidate,
-            "blocked": None if trade_ready else ("QUALITY_SCORE" if not score_ok else "LIVE_CONFIRM"),
+            "blocked": blocked,
             "lm": lm,
-            "rsi": rctx,
             "regime": reg,
             "structure": st,
             "setup": setup,
@@ -3583,6 +3816,7 @@ def _deep_scan_one(item):
             "spread": spread,
             "book": book,
             "oi": oi,
+            "persistence": persistence,
             "error": None,
         }
 
@@ -3601,11 +3835,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V5 ACTIVE MANAGER SCAN START")
+    scan_log("RAZA V6 RESEARCH FLOW MOMENTUM SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V5 active-manager scanning Top {TOP_COINS} Bitget Futures..."
+            f"V6 research-flow scanning Top {TOP_COINS} crypto futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -3739,24 +3973,31 @@ def scan_once():
         key=lambda x: x[0],
     )
 
+    long_watch = []
+    short_watch = []
+    compact_watch = []
+    for rank, symbol, lm in light_candidates[:30]:
+        row = {
+            "symbol": symbol,
+            "rank": round(float(rank), 2),
+            "bias": lm.get("trend_bias", "WAIT"),
+            "rsi_15m": lm.get("rsi_15m"),
+            "vol_ratio_15m": round(float(lm.get("vol_ratio_15m") or 0), 2),
+            "atr_15m_pct": round(float(lm.get("atr_15m_pct") or 0) * 100, 3),
+            "ema20_slope_15m": round(float(lm.get("ema20_slope_15m") or 0) * 100, 4),
+        }
+        compact_watch.append(row)
+        if row["bias"] == "BUY" and len(long_watch) < 10:
+            long_watch.append(row)
+        elif row["bias"] == "SELL" and len(short_watch) < 10:
+            short_watch.append(row)
+
     with state_lock:
-        state["watchlist"] = [
-            {
-                "symbol": symbol,
-                "rank": round(float(rank), 2),
-                "rsi_15m": lm.get("rsi_15m"),
-                "vol_ratio_15m": round(
-                    float(lm.get("vol_ratio_15m") or 0),
-                    2,
-                ),
-                "atr_15m_pct": round(
-                    float(lm.get("atr_15m_pct") or 0) * 100,
-                    3,
-                ),
-            }
-            for rank, symbol, lm
-            in light_candidates[:20]
-        ]
+        state["watchlist"] = compact_watch[:20]
+        state["research_watchlist"] = {
+            "long": long_watch,
+            "short": short_watch,
+        }
 
     scan_log(
         f"LIGHT SCAN COMPLETE: "
@@ -3774,7 +4015,7 @@ def scan_once():
     ]
 
     scan_log(
-        f"V5 DEEP SCAN START: {len(deep_items)} candidates"
+        f"V6 DEEP SCAN START: {len(deep_items)} candidates"
     )
 
     alerts = 0
@@ -3843,16 +4084,19 @@ def scan_once():
                 p = performance()
 
                 telegram_async(
-                    f"🚨 RAZA SHAH SIGNAL V5 — TRADE READY\n\n"
+                    f"🚨 RAZA SHAH SIGNAL V6 — RESEARCH SIGNAL READY\n\n"
                     f"Exchange: BITGET FUTURES\n"
                     f"Coin: {c['symbol']}\n"
                     f"Side: "
                     f"{'LONG' if c['signal']=='BUY' else 'SHORT'}\n"
                     f"Quality: {c['score']}/100 ({c['risk_label']})\n\n"
+                    f"Mode: {c.get('research_mode', 'HTF_FLOW_MOMENTUM')}\n"
+                    f"Direction: {c.get('direction_basis', '—')}\n"
                     f"4H: {c['regime_4h']}\n"
                     f"1H: {c['structure_1h']}\n"
                     f"15M: {c['setup_15m']}\n"
-                    f"5M: {c['trigger_5m']}\n\n"
+                    f"5M: {c['trigger_5m']}\n"
+                    f"Flow persistence: {c.get('flow_persistence_aligned',0)}/{c.get('flow_persistence_required',FLOW_PERSIST_REQUIRED)}\n\n"
                     f"Entry: {c['price']:.8g}\n"
                     f"TP: {c['tp']:.8g}\n"
                     f"SL: {c['sl']:.8g}\n"
@@ -3887,30 +4131,43 @@ def scan_once():
         state["last_scan_seconds"] = elapsed
         state["blocked_counts"] = blocked_counts
 
+        top_block = (
+            max(blocked_counts, key=blocked_counts.get)
+            if blocked_counts else "NO_SETUP"
+        )
+        state["signal_generator"] = {
+            "action": (
+                ("LONG" if best.get("signal") == "BUY" else "SHORT")
+                if best else "WAIT"
+            ),
+            "symbol": best.get("symbol") if best else None,
+            "score": best.get("score", 0) if best else 0,
+            "ready": bool(best and best.get("hard_confirm")),
+            "reason": best.get("status") if best else top_block,
+            "research_mode": (best.get("research_mode") if best else "HTF_FLOW_MOMENTUM_CONTINUATION"),
+            "direction_basis": best.get("direction_basis") if best else None,
+            "flow_persistence": (
+                f"{best.get('flow_persistence_aligned',0)}/{best.get('flow_persistence_required',FLOW_PERSIST_REQUIRED)}"
+                if best else "0/0"
+            ),
+            "build_version": BUILD_VERSION,
+        }
+
         if alerts:
             state["status"] = (
-                f"V5: {alerts} fully validated trade ready"
+                f"V6: {alerts} research-validated signal ready"
             )
 
         elif best:
             state["status"] = (
-                f"V5 best: {best['symbol']} "
+                f"V6 best: {best['symbol']} "
                 f"{'LONG' if best['signal']=='BUY' else 'SHORT'} "
                 f"{best['score']}/100 — {best['status']}"
             )
 
         else:
-            top_block = (
-                max(
-                    blocked_counts,
-                    key=blocked_counts.get,
-                )
-                if blocked_counts
-                else "NO_SETUP"
-            )
-
             state["status"] = (
-                f"V5 waiting — main block: {top_block}"
+                f"V6 waiting — main block: {top_block}"
             )
 
         if (
@@ -3924,7 +4181,7 @@ def scan_once():
     save_state_snapshot()
 
     scan_log(
-        f"V5 SCAN COMPLETE in {elapsed}s "
+        f"V6 SCAN COMPLETE in {elapsed}s "
         f"| alerts={alerts} "
         f"| best={best['symbol'] if best else 'NONE'} "
         f"| blocked={blocked_counts}"
@@ -4136,7 +4393,7 @@ def telegram_hourly_status_loop():
                 best_line = "Best: none"
 
             telegram_async(
-                f"🟢 RAZA SHAH SIGNAL V5\n"
+                f"🟢 RAZA SHAH SIGNAL V6\n"
                 f"1 HOUR STATUS\n\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
@@ -4191,8 +4448,8 @@ def scanner_loop():
     telegram_async(
         f"🟢 RAZA SHAH SIGNAL V2\n"
         f"LIVE PAPER TEST ACTIVE\n\n"
-        f"Logic: RSI Extreme → 15M Liquidity Sweep → "
-        f"5M Reversal → Flow/Book/OI\n"
+        f"Logic: 4H+1H Momentum → 15M Structure → 5M Trigger → "
+        f"Persistent Flow/Book/OI\n"
         f"Exchange: BITGET FUTURES\n"
         f"Top Coins: {TOP_COINS}\n"
         f"Deep Scan: {DEEP_CHECK}\n"
@@ -4202,6 +4459,7 @@ def scanner_loop():
         f"({'ON' if SESSION_FILTER_ENABLED else 'OFF'})\n"
         f"BTC: CONTEXT ONLY (no hard block)\n"
         f"Net R:R Target: 1:{NET_RR_TARGET:.2f}\n"
+        f"Crypto-only RWA filter: {'ON' if CRYPTO_ONLY_FILTER else 'OFF'}\n"
         f"Paper Tester: ${TEST_START_CAPITAL:.0f}\n"
         f"Capital Risk/Trade: "
         f"{CAPITAL_RISK_PER_TRADE*100:.2f}%\n"
@@ -4377,18 +4635,26 @@ def api_status():
     x["capital_summary"] = capital_summary()
     x["trade_audit"] = recent_trade_audit(20)
     x["active_build_marker"] = f"{STRATEGY_VERSION} | {BUILD_VERSION}"
+    x["signal_generator"] = x.get("signal_generator") or {"action": "WAIT", "reason": "NO_SETUP"}
+    x["research_watchlist"] = x.get("research_watchlist") or {"long": [], "short": []}
+    # Compatibility for the existing frontend while V6 uses momentum lists.
+    x["rsi_watchlist"] = {
+        "oversold_long": x["research_watchlist"].get("long", []),
+        "overbought_short": x["research_watchlist"].get("short", []),
+    }
 
     x["dashboard"] = {
         "strategy_version": STRATEGY_VERSION,
         "build_version": BUILD_VERSION,
         "logic": (
-            "15m RSI extreme reclaim → true liquidity sweep → "
-            "HTF conflict veto → 5m CHoCH → BOTH flow+book confirm → "
+            "4H regime + 1H momentum define direction → 15m continuation/liquidity → "
+            "5m trigger → persistent aggressive flow + book + OI → "
             "net-RR TP → active BE/trailing/reversal protection"
         ),
         "risk_rules": {
             "score_role": "QUALITY ONLY",
-            "direction_audit": "ON",
+            "research_flow_mode": "ON",
+            "crypto_only_filter": CRYPTO_ONLY_FILTER,
             "htf_conflict_filter": HTF_CONFLICT_FILTER_ENABLED,
             "trade_ready": (
                 f"All V2R1 hard filters must pass and score must be >= {MIN_TRADE_SCORE}. "
@@ -4403,7 +4669,7 @@ def api_status():
                 else "OFF"
             ),
         },
-        "market_data": "Bitget USDT-M Futures public market data.",
+        "market_data": "Bitget crypto-only USDT-M Futures public market data; RWA contracts excluded when metadata is available.",
         "disclaimer": (
             "Paper-testing / informational signal system only. "
             "No profit or performance is guaranteed."
@@ -4422,6 +4688,24 @@ def api_trade_audit():
         "strategy_version": STRATEGY_VERSION,
         "build_version": BUILD_VERSION,
         "items": recent_trade_audit(TRADE_AUDIT_LIMIT),
+    })
+
+
+@app.route("/api/signal-generator")
+def api_signal_generator():
+    if not is_authorized():
+        return jsonify({"error": "unauthorized"}), 401
+
+    with state_lock:
+        gen = dict(state.get("signal_generator") or {})
+        best = dict(state.get("best_candidate") or {}) if state.get("best_candidate") else None
+
+    return jsonify({
+        "strategy_version": STRATEGY_VERSION,
+        "build_version": BUILD_VERSION,
+        "generator": gen,
+        "best_candidate": best,
+        "performance": performance(),
     })
 
 
