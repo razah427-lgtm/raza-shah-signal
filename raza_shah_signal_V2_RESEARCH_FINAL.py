@@ -40,9 +40,9 @@ from flask import (
 # -> PAPER SIGNAL
 # ============================================================
 
-STRATEGY_VERSION = "V6_RESEARCH_FLOW_MOMENTUM_20260815"
-BUILD_VERSION = "V6_RESEARCH_SIGNAL_GENERATOR_1A"
-REVERSAL_TEST_START_UTC = "2026-08-15T10:53:00+00:00"  # V6 research-flow clean forward-test start
+STRATEGY_VERSION = "V7_LIQUIDITY_HUNTER_20260815"
+BUILD_VERSION = "V7_LIQUIDITY_TARGET_1"
+REVERSAL_TEST_START_UTC = "2026-08-15T11:24:00+00:00"  # V7 liquidity-hunter clean forward-test start
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -142,6 +142,23 @@ CRYPTO_ONLY_FILTER = (
     os.getenv("CRYPTO_ONLY_FILTER", "true").strip().lower()
     in ("1", "true", "yes", "on")
 )
+
+# V7 LIQUIDITY HUNTER
+# Hidden stop orders are not directly visible. These are stop-pool proxies.
+LIQ_CLUSTER_TOL_PCT = float(os.getenv("LIQ_CLUSTER_TOL_PCT", "0.0012"))
+LIQ_CLUSTER_TOL_ATR = float(os.getenv("LIQ_CLUSTER_TOL_ATR", "0.20"))
+LIQ_TARGET_MIN_DIST_PCT = float(os.getenv("LIQ_TARGET_MIN_DIST_PCT", "0.0020"))
+LIQ_TARGET_MAX_DIST_PCT = float(os.getenv("LIQ_TARGET_MAX_DIST_PCT", "0.0400"))
+LIQ_TARGET_SCORE_MIN = float(os.getenv("LIQ_TARGET_SCORE_MIN", "4.0"))
+LIQ_TARGET_SCORE_GAP = float(os.getenv("LIQ_TARGET_SCORE_GAP", "1.0"))
+LIQ_TARGET_DOMINANCE_RATIO = float(os.getenv("LIQ_TARGET_DOMINANCE_RATIO", "1.20"))
+LIQ_TARGET_HISTORY_MAX = int(os.getenv("LIQ_TARGET_HISTORY_MAX", "4"))
+LIQ_TARGET_PERSIST_REQUIRED = int(os.getenv("LIQ_TARGET_PERSIST_REQUIRED", "2"))
+LIQ_PATH_BLOCK_WALL_RATIO = float(os.getenv("LIQ_PATH_BLOCK_WALL_RATIO", "5.0"))
+LIQ_PATH_BLOCK_FRACTION = float(os.getenv("LIQ_PATH_BLOCK_FRACTION", "0.75"))
+LIQ_TARGET_TP_BUFFER_ATR = float(os.getenv("LIQ_TARGET_TP_BUFFER_ATR", "0.12"))
+LIQ_ACTIVE_WALL_TRAIL_MIN_R = float(os.getenv("LIQ_ACTIVE_WALL_TRAIL_MIN_R", "0.50"))
+LIQ_ACTIVE_FLIP_RATIO = float(os.getenv("LIQ_ACTIVE_FLIP_RATIO", "1.35"))
 
 # Net reward model after estimated round-trip fee/slippage.
 NET_RR_TARGET = float(os.getenv("NET_RR_TARGET", "1.80"))
@@ -388,7 +405,7 @@ state = {
     "build_version": BUILD_VERSION,
     "exchange": "BITGET",
     "data_source": "Bitget USDT-M Futures",
-    "status": "Starting V6 Research Signal Generator...",
+    "status": "Starting V7 Liquidity Hunter...",
     "last_scan": None,
     "next_scan": None,
     "alerts_last_scan": 0,
@@ -404,6 +421,7 @@ state = {
     "signal_generator": {"action": "WAIT", "reason": "STARTING"},
     "flow_history": {},
     "oi_snapshot": {},
+    "liquidity_target_history": {},
 }
 
 
@@ -2041,6 +2059,20 @@ def _build_entry_context(row):
         "rsi_trough": row.get("rsi_trough"),
         "rsi_turn_amount": row.get("rsi_turn_amount"),
 
+        # Liquidity-target thesis
+        "liquidity_target_price": row.get("liquidity_target_price"),
+        "liquidity_target_score": row.get("liquidity_target_score"),
+        "liquidity_target_kind": row.get("liquidity_target_kind"),
+        "liquidity_target_distance_pct": row.get("liquidity_target_distance_pct"),
+        "liquidity_up_score": row.get("liquidity_up_score"),
+        "liquidity_down_score": row.get("liquidity_down_score"),
+        "liquidity_dominance_ratio": row.get("liquidity_dominance_ratio"),
+        "liquidity_dominance_gap": row.get("liquidity_dominance_gap"),
+        "liquidity_persistence_samples": row.get("liquidity_persistence_samples"),
+        "liquidity_persistence_aligned": row.get("liquidity_persistence_aligned"),
+        "liquidity_persistence_required": row.get("liquidity_persistence_required"),
+        "liquidity_persistent": row.get("liquidity_persistent"),
+
         # HTF context / veto
         "regime_4h": row.get("regime_4h"),
         "structure_1h": row.get("structure_1h"),
@@ -2575,7 +2607,9 @@ def diagnose_trade_exit(row, result):
     whale_dir = whale if side == "BUY" else -whale
 
     exit_reason = str(row.get("exit_reason") or "")
-    if exit_reason == "ACTIVE_REVERSAL_EXIT":
+    if exit_reason == "LIQUIDITY_TARGET_FLIP_EXIT":
+        reasons.append("LIQUIDITY_TARGET_FLIPPED")
+    elif exit_reason == "ACTIVE_REVERSAL_EXIT":
         reasons.append("ACTIVE_REVERSAL_PROTECTION")
     elif exit_reason == "ACTIVE_SL_HIT":
         reasons.append("ACTIVE_PROFIT_PROTECT_SL")
@@ -2680,6 +2714,7 @@ def _active_trade_micro_snapshot(symbol, side):
             "hostile": hostile,
             "weak": weak,
             "strong": strong,
+            "heat": heat,
         }
 
     except Exception as e:
@@ -2890,8 +2925,40 @@ def check_open_trades():
                 )
 
                 if micro:
+                    # V7: tighten behind a strong supporting wall only after trade has moved >=0.5R favorable.
+                    if favorable_r >= LIQ_ACTIVE_WALL_TRAIL_MIN_R:
+                        heat_now = micro.get("heat") or {}
+                        wall = (heat_now.get("bid_wall") if side == "BUY" else heat_now.get("ask_wall")) or {}
+                        wall_px = float(wall.get("price") or 0)
+                        wall_ratio = float(wall.get("ratio_to_median") or 0)
+                        buffer_dist = max(entry * 0.0003, entry * initial_risk_pct * 0.10)
+                        if side == "BUY":
+                            wall_sl = wall_px - buffer_dist
+                            if wall_px > entry and wall_px < px and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO and wall_sl > sl and wall_sl < px:
+                                r["sl"] = wall_sl; sl = wall_sl; dirty = True
+                                scan_log(f"LIQUIDITY WALL SL {symbol} BUY -> {sl:.8g}")
+                        else:
+                            wall_sl = wall_px + buffer_dist
+                            if wall_px < entry and wall_px > px and wall_ratio >= ORDERBOOK_WALL_MIN_RATIO and wall_sl < sl and wall_sl > px:
+                                r["sl"] = wall_sl; sl = wall_sl; dirty = True
+                                scan_log(f"LIQUIDITY WALL SL {symbol} SELL -> {sl:.8g}")
+
+                    try:
+                        liq_now = liquidity_target_map_15m(symbol, price=px, heat=micro.get("heat"))
+                    except Exception:
+                        liq_now = None
+                    target_flip = False
+                    if liq_now:
+                        pref = liq_now.get("preferred_side")
+                        dom = float(liq_now.get("dominance_ratio") or 0)
+                        target_flip = pref in ("BUY", "SELL") and pref != side and dom >= LIQ_ACTIVE_FLIP_RATIO
+                    if target_flip and micro["hostile"]:
+                        net_now = _current_net_result(entry, px, side)
+                        result = "WIN" if net_now > 0 else "LOSS"
+                        exit_reason = "LIQUIDITY_TARGET_FLIP_EXIT"
+
                     # 4) Strong reversal: do not wait for full SL.
-                    if micro["hostile"] and (
+                    elif micro["hostile"] and (
                         adverse_r
                         >= ACTIVE_EARLY_EXIT_ADVERSE_R
                         or favorable_r
@@ -3037,7 +3104,11 @@ def check_open_trades():
         ) in closed_messages:
 
             icon = "✅" if result == "WIN" else "❌"
-            if exit_reason == "ACTIVE_REVERSAL_EXIT":
+            if exit_reason == "LIQUIDITY_TARGET_FLIP_EXIT":
+                label = (
+                    f"LIQUIDITY TARGET FLIP EXIT / {result}"
+                )
+            elif exit_reason == "ACTIVE_REVERSAL_EXIT":
                 label = (
                     f"ACTIVE REVERSAL EXIT / {result}"
                 )
@@ -3333,56 +3404,218 @@ def reversal_quality_score(side, rctx, setup, trigger, delta, book, spread, oi, 
 
     return min(100, int(round(score)))
 
+
+# ============================================================
+# V7 LIQUIDITY HUNTER HELPERS
+# ============================================================
+
+def _cluster_price_levels(points, tolerance):
+    pts = sorted((float(px), int(idx)) for px, idx in points if float(px) > 0)
+    if not pts:
+        return []
+    clusters = []
+    for px, idx in pts:
+        placed = False
+        for c in clusters:
+            if abs(px - c["price"]) <= tolerance:
+                c["prices"].append(px)
+                c["indices"].append(idx)
+                c["price"] = sum(c["prices"]) / len(c["prices"])
+                placed = True
+                break
+        if not placed:
+            clusters.append({"price": px, "prices": [px], "indices": [idx]})
+    return clusters
+
+
+def _swing_liquidity_points(candles):
+    highs, lows = [], []
+    if len(candles) < 7:
+        return highs, lows
+    for i in range(2, len(candles)-2):
+        h=float(candles[i]["high"]); l=float(candles[i]["low"])
+        if h>=float(candles[i-1]["high"]) and h>=float(candles[i-2]["high"]) and h>=float(candles[i+1]["high"]) and h>=float(candles[i+2]["high"]):
+            highs.append((h,i))
+        if l<=float(candles[i-1]["low"]) and l<=float(candles[i-2]["low"]) and l<=float(candles[i+1]["low"]) and l<=float(candles[i+2]["low"]):
+            lows.append((l,i))
+    return highs,lows
+
+
+def _score_liquidity_cluster(cluster, price, atr15, total_bars, side_kind):
+    level=float(cluster["price"])
+    dist=abs(level-price)/price if price>0 else 999.0
+    if dist<LIQ_TARGET_MIN_DIST_PCT or dist>LIQ_TARGET_MAX_DIST_PCT:
+        return None
+    touches=len(cluster["prices"])
+    bars_ago=max(0,total_bars-1-max(cluster["indices"]))
+    touch_score=min(7.0,1.8*touches)
+    recency_score=max(0.5,2.0*(1.0-min(bars_ago,70)/70.0))
+    distance_weight=max(0.45,1.0-0.45*(dist/max(LIQ_TARGET_MAX_DIST_PCT,1e-9)))
+    score=(touch_score+recency_score)*distance_weight
+    return {"price":level,"score":round(score,4),"touches":touches,"distance_pct":dist,"bars_ago":bars_ago,"kind":side_kind}
+
+
+def liquidity_target_map_from_candles(candles, price, heat=None):
+    if not candles or len(candles)<60 or price<=0:
+        return {"up":None,"down":None,"up_score":0.0,"down_score":0.0,"dominance_ratio":0.0,"dominance_gap":0.0,"preferred_side":None,"path_blocked":False}
+    completed=list(candles[-100:-1])
+    atr15=atr_value(completed[-50:],14)
+    tolerance=max(price*LIQ_CLUSTER_TOL_PCT,atr15*LIQ_CLUSTER_TOL_ATR)
+    swing_highs,swing_lows=_swing_liquidity_points(completed)
+    high_clusters=_cluster_price_levels(swing_highs,tolerance)
+    low_clusters=_cluster_price_levels(swing_lows,tolerance)
+    up_candidates=[]; down_candidates=[]
+    for c in high_clusters:
+        if float(c["price"])>price:
+            x=_score_liquidity_cluster(c,price,atr15,len(completed),"BUY_SIDE_STOPS_ABOVE")
+            if x: up_candidates.append(x)
+    for c in low_clusters:
+        if 0<float(c["price"])<price:
+            x=_score_liquidity_cluster(c,price,atr15,len(completed),"SELL_SIDE_STOPS_BELOW")
+            if x: down_candidates.append(x)
+    recent=completed[-55:]
+    ext_high=max(float(x["high"]) for x in recent); ext_low=min(float(x["low"]) for x in recent)
+    if ext_high>price:
+        dist=(ext_high-price)/price
+        if LIQ_TARGET_MIN_DIST_PCT<=dist<=LIQ_TARGET_MAX_DIST_PCT:
+            up_candidates.append({"price":ext_high,"score":round(max(3.25,4.25*(1.0-0.30*dist/LIQ_TARGET_MAX_DIST_PCT)),4),"touches":1,"distance_pct":dist,"bars_ago":0,"kind":"EXTERNAL_HIGH_STOPS"})
+    if 0<ext_low<price:
+        dist=(price-ext_low)/price
+        if LIQ_TARGET_MIN_DIST_PCT<=dist<=LIQ_TARGET_MAX_DIST_PCT:
+            down_candidates.append({"price":ext_low,"score":round(max(3.25,4.25*(1.0-0.30*dist/LIQ_TARGET_MAX_DIST_PCT)),4),"touches":1,"distance_pct":dist,"bars_ago":0,"kind":"EXTERNAL_LOW_STOPS"})
+    up=max(up_candidates,key=lambda x:x["score"],default=None); down=max(down_candidates,key=lambda x:x["score"],default=None)
+    up_score=float((up or {}).get("score") or 0); down_score=float((down or {}).get("score") or 0)
+    hi=max(up_score,down_score); lo=min(up_score,down_score)
+    ratio=hi/max(lo,1e-9) if hi>0 else 0.0; gap=abs(up_score-down_score)
+    preferred_side=None
+    if up_score>=LIQ_TARGET_SCORE_MIN and up_score>down_score and gap>=LIQ_TARGET_SCORE_GAP and ratio>=LIQ_TARGET_DOMINANCE_RATIO:
+        preferred_side="BUY"
+    elif down_score>=LIQ_TARGET_SCORE_MIN and down_score>up_score and gap>=LIQ_TARGET_SCORE_GAP and ratio>=LIQ_TARGET_DOMINANCE_RATIO:
+        preferred_side="SELL"
+    heat=heat or {}; ask_wall=heat.get("ask_wall") or {}; bid_wall=heat.get("bid_wall") or {}
+    path_blocked=False; path_block_reason=None
+    if preferred_side=="BUY" and up:
+        wall_px=float(ask_wall.get("price") or 0); wall_ratio=float(ask_wall.get("ratio_to_median") or 0); target_dist=max(float(up["distance_pct"]),1e-9)
+        wall_dist=((wall_px-price)/price) if wall_px>price else 999
+        if wall_px>price and wall_px<float(up["price"]) and wall_ratio>=LIQ_PATH_BLOCK_WALL_RATIO and wall_dist<=target_dist*LIQ_PATH_BLOCK_FRACTION:
+            path_blocked=True; path_block_reason="STRONG_ASK_WALL_BEFORE_TARGET"
+    elif preferred_side=="SELL" and down:
+        wall_px=float(bid_wall.get("price") or 0); wall_ratio=float(bid_wall.get("ratio_to_median") or 0); target_dist=max(float(down["distance_pct"]),1e-9)
+        wall_dist=((price-wall_px)/price) if 0<wall_px<price else 999
+        if 0<wall_px<price and wall_px>float(down["price"]) and wall_ratio>=LIQ_PATH_BLOCK_WALL_RATIO and wall_dist<=target_dist*LIQ_PATH_BLOCK_FRACTION:
+            path_blocked=True; path_block_reason="STRONG_BID_WALL_BEFORE_TARGET"
+    return {"up":up,"down":down,"up_score":round(up_score,4),"down_score":round(down_score,4),"dominance_ratio":round(ratio,4),"dominance_gap":round(gap,4),"preferred_side":preferred_side,"path_blocked":path_blocked,"path_block_reason":path_block_reason,"atr":atr15}
+
+
+def liquidity_target_map_15m(symbol, price=None, heat=None):
+    c=candle_dicts(symbol,"15m",120)
+    if len(c)<70: raise RuntimeError(f"Not enough 15M candles for liquidity map {symbol}")
+    return liquidity_target_map_from_candles(c,float(price or c[-1]["close"]),heat=heat)
+
+
+def update_liquidity_target_history(symbol, side, liq_map):
+    selected=(liq_map.get("up") if side=="BUY" else liq_map.get("down")) or {}
+    snap={"ts":time.time(),"side":side,"target_price":float(selected.get("price") or 0),"target_score":float(selected.get("score") or 0),"dominance_ratio":float(liq_map.get("dominance_ratio") or 0)}
+    with state_lock:
+        store=state.setdefault("liquidity_target_history",{})
+        hist=list(store.get(symbol) or []); hist.append(snap); hist=hist[-max(2,LIQ_TARGET_HISTORY_MAX):]; store[symbol]=hist
+    return hist
+
+
+def liquidity_target_persistence(side, history):
+    hist=list(history or [])[-max(2,LIQ_TARGET_HISTORY_MAX):]
+    aligned=[x for x in hist if x.get("side")==side and float(x.get("target_score") or 0)>=LIQ_TARGET_SCORE_MIN]
+    return {"samples":len(hist),"aligned":len(aligned),"required":LIQ_TARGET_PERSIST_REQUIRED,"persistent":len(aligned)>=LIQ_TARGET_PERSIST_REQUIRED,"avg_target_score":(sum(float(x.get("target_score") or 0) for x in aligned)/len(aligned) if aligned else 0.0),"avg_dominance_ratio":(sum(float(x.get("dominance_ratio") or 0) for x in aligned)/len(aligned) if aligned else 0.0)}
+
+
+def _htf_liquidity_support(side, reg, st):
+    regime=str(reg.get("regime") or "SIDEWAYS"); structure=str(st.get("structure") or "RANGE")
+    reg_aligned=(side=="BUY" and regime=="BULL") or (side=="SELL" and regime=="BEAR")
+    reg_opposed=(side=="BUY" and regime=="BEAR") or (side=="SELL" and regime=="BULL")
+    st_aligned=(side=="BUY" and structure=="BULL_MOMENTUM") or (side=="SELL" and structure=="BEAR_MOMENTUM")
+    st_opposed=(side=="BUY" and structure=="BEAR_MOMENTUM") or (side=="SELL" and structure=="BULL_MOMENTUM")
+    return {"reg_aligned":reg_aligned,"reg_opposed":reg_opposed,"st_aligned":st_aligned,"st_opposed":st_opposed,"hard_conflict":reg_opposed and st_opposed,"has_support":reg_aligned or st_aligned}
+
+
+def liquidity_hunter_quality_score(side,reg,st,setup,trigger,delta,book,spread,oi,whale,flow_persist,liq_map,liq_persist,btc_regime):
+    score=0; target=liq_map.get("up") if side=="BUY" else liq_map.get("down")
+    target_score=float((target or {}).get("score") or 0); dominance=float(liq_map.get("dominance_ratio") or 0)
+    if target_score>=8: score+=10
+    elif target_score>=6: score+=9
+    elif target_score>=LIQ_TARGET_SCORE_MIN: score+=7
+    if dominance>=1.8: score+=8
+    elif dominance>=1.5: score+=7
+    elif dominance>=LIQ_TARGET_DOMINANCE_RATIO: score+=5
+    if liq_persist.get("persistent"): score+=7
+    h=_htf_liquidity_support(side,reg,st)
+    if h["reg_aligned"]: score+=10
+    elif not h["reg_opposed"]: score+=5
+    if h["st_aligned"]: score+=10
+    elif not h["st_opposed"]: score+=5
+    name=str(setup.get("setup") or "")
+    if name=="BREAKOUT_RETEST": score+=10
+    elif name=="PULLBACK_CONTINUATION": score+=9
+    elif name in ("LOW_SWEEP_RECLAIM","HIGH_SWEEP_REJECT"): score+=8
+    if trigger.get("valid"): score+=10
+    if flow_persist.get("persistent"): score+=9
+    flow_dir=_directional(delta,side)
+    if flow_dir>=0.30: score+=3
+    elif flow_dir>=ENTRY_FLOW_MIN: score+=2
+    book_dir=_directional(book,side)
+    if book_dir>=0.30: score+=8
+    elif book_dir>=ENTRY_BOOK_MIN: score+=6
+    if oi>=0.15: score+=5
+    elif oi>0: score+=4
+    elif oi>=OI_CONTINUATION_FLOOR: score+=2
+    whale_dir=_directional(whale.get("whale_delta"),side)
+    if whale_dir>=0.50: score+=4
+    elif whale_dir>=0.25: score+=3
+    elif whale_dir>=0: score+=1
+    vr=float(setup.get("vol_ratio") or 0)
+    if vr>=1.5: score+=3
+    elif vr>=1.1: score+=2
+    elif vr>=MIN_VOL_RATIO: score+=1
+    if spread<=0.75: score+=2
+    elif spread<=MAX_SPREAD_BPS: score+=1
+    btc=str((btc_regime or {}).get("regime") or "SIDEWAYS")
+    if (side=="BUY" and btc=="BULL") or (side=="SELL" and btc=="BEAR"): score+=1
+    return min(100,int(round(score)))
+
+
+def liquidity_hunter_risk(entry,side,setup,liq_map,heat=None,whale=None):
+    base=dynamic_risk(entry,side,setup,heat=heat,whale=whale)
+    if not base: return None
+    target=liq_map.get("up") if side=="BUY" else liq_map.get("down")
+    target_price=float((target or {}).get("price") or 0); atr15=float(setup.get("atr") or 0)
+    if target_price<=0 or atr15<=0: return None
+    buffer_dist=max(atr15*LIQ_TARGET_TP_BUFFER_ATR,entry*0.0003)
+    if side=="BUY":
+        tp=target_price-buffer_dist
+        if tp<=entry: return None
+        move_pct=(tp-entry)/entry
+    else:
+        tp=target_price+buffer_dist
+        if tp<=0 or tp>=entry: return None
+        move_pct=(entry-tp)/entry
+    net_rr=_net_rr_from_move(move_pct,float(base["risk_pct"]))
+    if net_rr<NET_RR_MIN: return None
+    base.update({"tp":tp,"rr":net_rr,"net_rr":net_rr,"tp_source":"INFERRED_STOP_LIQUIDITY_POOL","liquidity_target_price":target_price,"liquidity_target_score":float((target or {}).get("score") or 0),"liquidity_target_kind":(target or {}).get("kind"),"liquidity_target_distance_pct":float((target or {}).get("distance_pct") or 0)})
+    return base
+
 # ============================================================
 # LIGHT SCAN
 # ============================================================
 
 def light_metrics(symbol):
-    c15 = candle_dicts(symbol, "15m", 80)
-    if len(c15) < 50:
-        return None
-
-    closes = [x["close"] for x in c15]
-    price = closes[-1]
-    r15 = rsi(closes, 14)
-    vr = volume_ratio(c15, 20)
-    a = atr_value(c15[-40:], 14)
-    atr_pct = a / price if price > 0 else 0.0
-
-    e20 = ema(closes[-70:], 20)
-    e50 = ema(closes[-80:], 50)
-    e20_prev = ema(closes[-70:-4], 20)
-    slope = ((e20 / e20_prev) - 1.0) if e20_prev > 0 else 0.0
-    separation = ((e20 - e50) / price) if price > 0 else 0.0
-
-    if e20 > e50 and price > e20 and slope > 0:
-        bias = "BUY"
-    elif e20 < e50 and price < e20 and slope < 0:
-        bias = "SELL"
-    else:
-        bias = "WAIT"
-
-    # Momentum-first discovery: trend separation + slope + tradable activity.
-    trend_strength = abs(separation) * 100000.0
-    slope_strength = abs(slope) * 100000.0
-    rank = (
-        trend_strength
-        + slope_strength
-        + min(vr, 3.0) * 10.0
-        + min(atr_pct * 10000.0, 80.0)
-    )
-
-    return {
-        "price": price,
-        "rsi_15m": round(r15, 2),
-        "vol_ratio_15m": vr,
-        "atr_15m_pct": atr_pct,
-        "ema20_15m": e20,
-        "ema50_15m": e50,
-        "ema20_slope_15m": slope,
-        "trend_bias": bias,
-        "rank": rank,
-    }
+    c15=candle_dicts(symbol,"15m",100)
+    if len(c15)<60: return None
+    closes=[x["close"] for x in c15]; price=closes[-1]; r15=rsi(closes,14); vr=volume_ratio(c15,20); a=atr_value(c15[-40:],14); atr_pct=a/price if price>0 else 0.0
+    e20=ema(closes[-70:],20); e50=ema(closes[-80:],50); e20_prev=ema(closes[-70:-4],20); slope=((e20/e20_prev)-1.0) if e20_prev>0 else 0.0
+    liq=liquidity_target_map_from_candles(c15,price,heat=None)
+    up_score=float(liq.get("up_score") or 0); down_score=float(liq.get("down_score") or 0)
+    bias="BUY" if liq.get("preferred_side")=="BUY" else "SELL" if liq.get("preferred_side")=="SELL" else "WAIT"
+    rank=abs(up_score-down_score)*16.0+max(up_score,down_score)*10.0+min(vr,3.0)*7.0+min(atr_pct*10000.0,60.0)+min(abs(slope)*100000.0,30.0)
+    return {"price":price,"rsi_15m":round(r15,2),"vol_ratio_15m":vr,"atr_15m_pct":atr_pct,"ema20_15m":e20,"ema50_15m":e50,"ema20_slope_15m":slope,"trend_bias":bias,"liquidity_up_score":up_score,"liquidity_down_score":down_score,"liquidity_dominance":float(liq.get("dominance_ratio") or 0),"liquidity_target_up":float((liq.get("up") or {}).get("price") or 0),"liquidity_target_down":float((liq.get("down") or {}).get("price") or 0),"rank":rank}
 
 def _light_scan_one(symbol):
     try:
@@ -3576,291 +3809,42 @@ def research_quality_score(side, reg, st, setup, trigger, delta, book, spread, o
 # ============================================================
 
 def _deep_scan_one(item):
-    _, symbol, lm, btc_regime = item
-
+    _,symbol,lm,btc_regime=item
     try:
-        reg = regime_4h(symbol)
-        st = structure_1h(symbol)
-
-        # PRIMARY DIRECTION = aligned higher-timeframe momentum.
-        if reg.get("regime") == "BULL" and st.get("structure") == "BULL_MOMENTUM":
-            side = "BUY"
-            direction_basis = "4H_BULL_1H_BULL_MOMENTUM"
-        elif reg.get("regime") == "BEAR" and st.get("structure") == "BEAR_MOMENTUM":
-            side = "SELL"
-            direction_basis = "4H_BEAR_1H_BEAR_MOMENTUM"
-        else:
-            return {
-                "symbol": symbol,
-                "blocked": "HTF_NOT_ALIGNED",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "error": None,
-            }
-
-        # RSI is NOT direction. It only prevents chasing exhausted moves.
-        rsi15 = timeframe_rsi(symbol, "15m")
-        if side == "BUY" and rsi15 >= RSI_LONG_CHASE_MAX:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "RSI_LONG_OVEREXTENDED",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "rsi_15m": rsi15,
-                "error": None,
-            }
-        if side == "SELL" and rsi15 <= RSI_SHORT_CHASE_MIN:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "RSI_SHORT_OVEREXTENDED",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "rsi_15m": rsi15,
-                "error": None,
-            }
-
-        # 15m structure must offer a continuation entry location in the HTF direction.
-        setup = liquidity_setup_15m(symbol, side)
-        if not setup.get("valid"):
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "15M_NO_CONTINUATION_SETUP",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "rsi_15m": rsi15,
-                "error": None,
-            }
-
-        if float(setup.get("vol_ratio") or 0) < MIN_VOL_RATIO:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "LOW_VOLUME",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "error": None,
-            }
-
-        # Build persistent market-pressure history BEFORE the 5m trigger fires.
-        # This lets the scanner observe whether pressure survives across scans
-        # instead of starting history only after the final entry candle appears.
-        heat = orderbook_heat_metrics(symbol)
-        if not heat:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "NO_ORDER_BOOK",
-                "score": 0,
-                "error": None,
-            }
-
-        spread = float(heat["spread_bps"])
-        book = float(heat["book_imb"])
-        whale = flow_metrics_detailed(symbol)
-        delta = float(whale["delta"])
-        buy = float(whale["buy"])
-        sell = float(whale["sell"])
-        oi = float(oi_change_pct(symbol))
-
-        history = update_flow_history(
-            symbol,
-            delta,
-            book,
-            oi,
-            whale.get("whale_delta", 0.0),
-        )
-        persistence = flow_persistence(side, history)
-
-        # 5m execution timing is mandatory, but flow history is already building.
-        trigger = entry_trigger_5m(symbol, side)
-        if not trigger.get("valid"):
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "5M_TRIGGER_WAIT",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "trigger": trigger,
-                "delta": delta,
-                "book": book,
-                "spread": spread,
-                "oi": oi,
-                "persistence": persistence,
-                "error": None,
-            }
-
-        live_ok, live_reasons = research_live_confirmation(
-            side,
-            delta,
-            book,
-            spread,
-            oi,
-            whale.get("whale_delta", 0.0),
-            persistence,
-        )
-
-        q = research_quality_score(
-            side,
-            reg,
-            st,
-            setup,
-            trigger,
-            delta,
-            book,
-            spread,
-            oi,
-            whale,
-            persistence,
-            btc_regime,
-        )
-
-        score_ok = q >= MIN_TRADE_SCORE
-        trade_ready = live_ok and score_ok
-        if not score_ok:
-            live_reasons = list(live_reasons) + ["QUALITY_SCORE"]
-
-        price = current_price(symbol)
-        risk = dynamic_risk(
-            price,
-            side,
-            setup,
-            heat=heat,
-            whale=whale,
-        )
-
-        if risk is None:
-            return {
-                "symbol": symbol,
-                "side": side,
-                "blocked": "SMART_RISK_NO_ROOM",
-                "score": q,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "trigger": trigger,
-                "delta": delta,
-                "book": book,
-                "spread": spread,
-                "oi": oi,
-                "persistence": persistence,
-                "error": None,
-            }
-
-        candidate = {
-            "time_utc": datetime.now(timezone.utc).isoformat(),
-            "strategy_version": STRATEGY_VERSION,
-            "build_version": BUILD_VERSION,
-            "exchange": "BITGET",
-            "data_source": "Bitget crypto-only USDT-M Futures",
-            "symbol": symbol,
-            "signal": side,
-            "score": q,
-            "risk_label": risk_label(q),
-            "price": price,
-
-            "research_mode": "HTF_FLOW_MOMENTUM_CONTINUATION",
-            "direction_basis": direction_basis,
-            "regime_4h": reg.get("regime", "SIDEWAYS"),
-            "structure_1h": st.get("structure", "RANGE"),
-            "structure_1h_strength": st.get("strength"),
-            "setup_15m": setup.get("setup", "NONE"),
-            "trigger_5m": trigger.get("trigger", "WAIT"),
-            "trigger_choch": trigger.get("choch", False),
-            "rsi_15m": round(float(rsi15), 2),
-            "rsi_prev": None,
-            "rsi_peak": None,
-            "rsi_trough": None,
-            "rsi_turn_amount": None,
-            "reversal_reason": "RSI_CONTEXT_ONLY",
-            "sweep_penetration_pct": setup.get("sweep_penetration_pct", 0.0),
-
-            "flow_delta": delta,
-            "buy_usd_60s": buy,
-            "sell_usd_60s": sell,
-            "spread_bps": spread,
-            "book_imb": book,
-            "oi_change_pct": oi,
-            "flow_persistence_samples": persistence.get("samples", 0),
-            "flow_persistence_aligned": persistence.get("aligned", 0),
-            "flow_persistence_required": persistence.get("required", FLOW_PERSIST_REQUIRED),
-            "flow_persistent": persistence.get("persistent", False),
-            "avg_flow_dir": persistence.get("avg_flow_dir", 0.0),
-            "avg_book_dir": persistence.get("avg_book_dir", 0.0),
-            "btc_regime": str((btc_regime or {}).get("regime") or "SIDEWAYS"),
-
-            "atr_15m_pct": setup["atr_pct"],
-            "vol_ratio": setup["vol_ratio"],
-
-            "risk_pct": risk["risk_pct"],
-            "capital_risk_pct": risk.get("capital_risk_pct", CAPITAL_RISK_PER_TRADE),
-            "effective_leverage": risk.get("effective_leverage", 0.0),
-            "position_notional": risk.get("position_notional", 0.0),
-            "rr": risk["rr"],
-            "tp": risk["tp"],
-            "sl": risk["sl"],
-            "tp_source": risk.get("tp_source"),
-            "sl_source": risk.get("sl_source"),
-            "whale_delta": risk.get("whale_delta", whale.get("whale_delta", 0.0)),
-            "bid_wall_price": risk.get("bid_wall_price", 0.0),
-            "ask_wall_price": risk.get("ask_wall_price", 0.0),
-            "bid_wall_ratio": risk.get("bid_wall_ratio", 0.0),
-            "ask_wall_ratio": risk.get("ask_wall_ratio", 0.0),
-
-            "hard_confirm": trade_ready,
-            "blocked_reasons": live_reasons,
-            "status": "TRADE READY" if trade_ready else "WAIT RESEARCH CONFIRMATION",
-        }
-
-        blocked = None
-        if not trade_ready:
-            blocked = live_reasons[0] if live_reasons else "QUALITY_SCORE"
-
-        return {
-            "symbol": symbol,
-            "side": side,
-            "score": q,
-            "candidate": candidate,
-            "blocked": blocked,
-            "lm": lm,
-            "regime": reg,
-            "structure": st,
-            "setup": setup,
-            "trigger": trigger,
-            "delta": delta,
-            "buy": buy,
-            "sell": sell,
-            "spread": spread,
-            "book": book,
-            "oi": oi,
-            "persistence": persistence,
-            "error": None,
-        }
-
+        reg=regime_4h(symbol); st=structure_1h(symbol)
+        heat=orderbook_heat_metrics(symbol)
+        if not heat: return {"symbol":symbol,"blocked":"NO_ORDER_BOOK","score":0,"error":None}
+        price=float(heat.get("mid") or current_price(symbol)); spread=float(heat["spread_bps"]); book=float(heat["book_imb"])
+        liq_map=liquidity_target_map_15m(symbol,price=price,heat=heat); side=liq_map.get("preferred_side")
+        if side not in ("BUY","SELL"): return {"symbol":symbol,"blocked":"NO_LIQUIDITY_DOMINANCE","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"error":None}
+        if liq_map.get("path_blocked"): return {"symbol":symbol,"side":side,"blocked":liq_map.get("path_block_reason") or "LIQUIDITY_PATH_BLOCKED","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"error":None}
+        direction_basis="BUY_SIDE_STOPS_ABOVE_DOMINANT" if side=="BUY" else "SELL_SIDE_STOPS_BELOW_DOMINANT"
+        liq_hist=update_liquidity_target_history(symbol,side,liq_map); liq_persist=liquidity_target_persistence(side,liq_hist)
+        if not liq_persist.get("persistent"): return {"symbol":symbol,"side":side,"blocked":"LIQUIDITY_TARGET_NOT_PERSISTENT","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"error":None}
+        htf=_htf_liquidity_support(side,reg,st)
+        if htf.get("hard_conflict"): return {"symbol":symbol,"side":side,"blocked":"LIQ_TARGET_AGAINST_4H_1H","score":0,"liquidity_map":liq_map,"error":None}
+        if not htf.get("has_support"): return {"symbol":symbol,"side":side,"blocked":"HTF_NO_SUPPORT_FOR_LIQ_TARGET","score":0,"liquidity_map":liq_map,"error":None}
+        rsi15=timeframe_rsi(symbol,"15m")
+        if side=="BUY" and rsi15>=RSI_LONG_CHASE_MAX: return {"symbol":symbol,"side":side,"blocked":"RSI_LONG_OVEREXTENDED","score":0,"rsi_15m":rsi15,"liquidity_map":liq_map,"error":None}
+        if side=="SELL" and rsi15<=RSI_SHORT_CHASE_MIN: return {"symbol":symbol,"side":side,"blocked":"RSI_SHORT_OVEREXTENDED","score":0,"rsi_15m":rsi15,"liquidity_map":liq_map,"error":None}
+        setup=liquidity_setup_15m(symbol,side)
+        if not setup.get("valid"): return {"symbol":symbol,"side":side,"blocked":"15M_NO_PATH_SETUP","score":0,"setup":setup,"liquidity_map":liq_map,"error":None}
+        if float(setup.get("vol_ratio") or 0)<MIN_VOL_RATIO: return {"symbol":symbol,"side":side,"blocked":"LOW_VOLUME","score":0,"setup":setup,"liquidity_map":liq_map,"error":None}
+        whale=flow_metrics_detailed(symbol); delta=float(whale["delta"]); buy=float(whale["buy"]); sell=float(whale["sell"]); oi=float(oi_change_pct(symbol))
+        flow_hist=update_flow_history(symbol,delta,book,oi,whale.get("whale_delta",0.0)); flow_persist=flow_persistence(side,flow_hist)
+        trigger=entry_trigger_5m(symbol,side)
+        if not trigger.get("valid"): return {"symbol":symbol,"side":side,"blocked":"5M_TRIGGER_WAIT","score":0,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"spread":spread,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
+        live_ok,live_reasons=research_live_confirmation(side,delta,book,spread,oi,whale.get("whale_delta",0.0),flow_persist)
+        q=liquidity_hunter_quality_score(side,reg,st,setup,trigger,delta,book,spread,oi,whale,flow_persist,liq_map,liq_persist,btc_regime)
+        score_ok=q>=MIN_TRADE_SCORE; trade_ready=live_ok and score_ok and liq_persist.get("persistent")
+        if not score_ok: live_reasons=list(live_reasons)+["QUALITY_SCORE"]
+        risk=liquidity_hunter_risk(price,side,setup,liq_map,heat=heat,whale=whale)
+        if risk is None: return {"symbol":symbol,"side":side,"blocked":"LIQUIDITY_TARGET_RR_NO_ROOM","score":q,"setup":setup,"trigger":trigger,"liquidity_map":liq_map,"error":None}
+        selected=(liq_map.get("up") if side=="BUY" else liq_map.get("down")) or {}
+        candidate={"time_utc":datetime.now(timezone.utc).isoformat(),"strategy_version":STRATEGY_VERSION,"build_version":BUILD_VERSION,"exchange":"BITGET","data_source":"Bitget crypto-only USDT-M Futures","symbol":symbol,"signal":side,"score":q,"risk_label":risk_label(q),"price":price,"research_mode":"LIQUIDITY_STOP_POOL_HUNTER","direction_basis":direction_basis,"regime_4h":reg.get("regime","SIDEWAYS"),"structure_1h":st.get("structure","RANGE"),"structure_1h_strength":st.get("strength"),"setup_15m":setup.get("setup","NONE"),"trigger_5m":trigger.get("trigger","WAIT"),"trigger_choch":trigger.get("choch",False),"rsi_15m":round(float(rsi15),2),"reversal_reason":"RSI_CONTEXT_ONLY","sweep_penetration_pct":setup.get("sweep_penetration_pct",0.0),"liquidity_target_price":float(selected.get("price") or 0),"liquidity_target_score":float(selected.get("score") or 0),"liquidity_target_kind":selected.get("kind"),"liquidity_target_distance_pct":float(selected.get("distance_pct") or 0),"liquidity_up_score":float(liq_map.get("up_score") or 0),"liquidity_down_score":float(liq_map.get("down_score") or 0),"liquidity_dominance_ratio":float(liq_map.get("dominance_ratio") or 0),"liquidity_dominance_gap":float(liq_map.get("dominance_gap") or 0),"liquidity_persistence_samples":liq_persist.get("samples",0),"liquidity_persistence_aligned":liq_persist.get("aligned",0),"liquidity_persistence_required":liq_persist.get("required",LIQ_TARGET_PERSIST_REQUIRED),"liquidity_persistent":liq_persist.get("persistent",False),"flow_delta":delta,"buy_usd_60s":buy,"sell_usd_60s":sell,"spread_bps":spread,"book_imb":book,"oi_change_pct":oi,"flow_persistence_samples":flow_persist.get("samples",0),"flow_persistence_aligned":flow_persist.get("aligned",0),"flow_persistence_required":flow_persist.get("required",FLOW_PERSIST_REQUIRED),"flow_persistent":flow_persist.get("persistent",False),"avg_flow_dir":flow_persist.get("avg_flow_dir",0.0),"avg_book_dir":flow_persist.get("avg_book_dir",0.0),"btc_regime":str((btc_regime or {}).get("regime") or "SIDEWAYS"),"atr_15m_pct":setup["atr_pct"],"vol_ratio":setup["vol_ratio"],"risk_pct":risk["risk_pct"],"capital_risk_pct":risk.get("capital_risk_pct",CAPITAL_RISK_PER_TRADE),"effective_leverage":risk.get("effective_leverage",0.0),"position_notional":risk.get("position_notional",0.0),"rr":risk["rr"],"tp":risk["tp"],"sl":risk["sl"],"tp_source":risk.get("tp_source"),"sl_source":risk.get("sl_source"),"whale_delta":risk.get("whale_delta",whale.get("whale_delta",0.0)),"bid_wall_price":risk.get("bid_wall_price",0.0),"ask_wall_price":risk.get("ask_wall_price",0.0),"bid_wall_ratio":risk.get("bid_wall_ratio",0.0),"ask_wall_ratio":risk.get("ask_wall_ratio",0.0),"hard_confirm":trade_ready,"blocked_reasons":live_reasons,"status":"TRADE READY" if trade_ready else "WAIT LIVE CONFIRMATION"}
+        return {"symbol":symbol,"side":side,"score":q,"candidate":candidate,"blocked":None if trade_ready else ("QUALITY_SCORE" if not score_ok else "LIVE_CONFIRM"),"lm":lm,"regime":reg,"structure":st,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
     except Exception as e:
-        return {
-            "symbol": symbol,
-            "error": str(e),
-        }
-
+        return {"symbol":symbol,"error":f"{type(e).__name__}: {e}"}
 
 # ============================================================
 # MAIN SCAN
@@ -3874,7 +3858,7 @@ def scan_once():
 
     with state_lock:
         state["status"] = (
-            f"V6 research-flow scanning Top {TOP_COINS} crypto futures..."
+            f"V7 liquidity-hunter scanning Top {TOP_COINS} crypto futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -4022,6 +4006,11 @@ def scan_once():
             "vol_ratio_15m": round(float(lm.get("vol_ratio_15m") or 0), 2),
             "atr_15m_pct": round(float(lm.get("atr_15m_pct") or 0) * 100, 3),
             "ema20_slope_15m": round(float(lm.get("ema20_slope_15m") or 0) * 100, 4),
+            "liquidity_up_score": round(float(lm.get("liquidity_up_score") or 0), 2),
+            "liquidity_down_score": round(float(lm.get("liquidity_down_score") or 0), 2),
+            "liquidity_dominance": round(float(lm.get("liquidity_dominance") or 0), 2),
+            "liquidity_target_up": lm.get("liquidity_target_up"),
+            "liquidity_target_down": lm.get("liquidity_target_down"),
         }
         compact_watch.append(row)
         if row["bias"] == "BUY" and len(long_watch) < 10:
@@ -4052,7 +4041,7 @@ def scan_once():
     ]
 
     scan_log(
-        f"V6 DEEP SCAN START: {len(deep_items)} candidates"
+        f"V7 DEEP SCAN START: {len(deep_items)} candidates"
     )
 
     alerts = 0
@@ -4121,18 +4110,21 @@ def scan_once():
                 p = performance()
 
                 telegram_async(
-                    f"🚨 RAZA SHAH SIGNAL V6 — RESEARCH SIGNAL READY\n\n"
+                    f"🚨 RAZA SHAH SIGNAL V7 — LIQUIDITY HUNTER READY\n\n"
                     f"Exchange: BITGET FUTURES\n"
                     f"Coin: {c['symbol']}\n"
                     f"Side: "
                     f"{'LONG' if c['signal']=='BUY' else 'SHORT'}\n"
                     f"Quality: {c['score']}/100 ({c['risk_label']})\n\n"
-                    f"Mode: {c.get('research_mode', 'HTF_FLOW_MOMENTUM')}\n"
+                    f"Mode: {c.get('research_mode', 'LIQUIDITY_STOP_POOL_HUNTER')}\n"
                     f"Direction: {c.get('direction_basis', '—')}\n"
                     f"4H: {c['regime_4h']}\n"
                     f"1H: {c['structure_1h']}\n"
                     f"15M: {c['setup_15m']}\n"
                     f"5M: {c['trigger_5m']}\n"
+                    f"Liquidity target: {c.get('liquidity_target_price',0):.8g}\n"
+                    f"Liquidity score UP/DOWN: {c.get('liquidity_up_score',0):.2f}/{c.get('liquidity_down_score',0):.2f}\n"
+                    f"Liquidity persistence: {c.get('liquidity_persistence_aligned',0)}/{c.get('liquidity_persistence_required',LIQ_TARGET_PERSIST_REQUIRED)}\n"
                     f"Flow persistence: {c.get('flow_persistence_aligned',0)}/{c.get('flow_persistence_required',FLOW_PERSIST_REQUIRED)}\n\n"
                     f"Entry: {c['price']:.8g}\n"
                     f"TP: {c['tp']:.8g}\n"
@@ -4181,10 +4173,18 @@ def scan_once():
             "score": best.get("score", 0) if best else 0,
             "ready": bool(best and best.get("hard_confirm")),
             "reason": best.get("status") if best else top_block,
-            "research_mode": (best.get("research_mode") if best else "HTF_FLOW_MOMENTUM_CONTINUATION"),
+            "research_mode": (best.get("research_mode") if best else "LIQUIDITY_STOP_POOL_HUNTER"),
             "direction_basis": best.get("direction_basis") if best else None,
             "flow_persistence": (
                 f"{best.get('flow_persistence_aligned',0)}/{best.get('flow_persistence_required',FLOW_PERSIST_REQUIRED)}"
+                if best else "0/0"
+            ),
+            "liquidity_target": best.get("liquidity_target_price") if best else None,
+            "liquidity_up_score": best.get("liquidity_up_score", 0) if best else 0,
+            "liquidity_down_score": best.get("liquidity_down_score", 0) if best else 0,
+            "liquidity_dominance": best.get("liquidity_dominance_ratio", 0) if best else 0,
+            "liquidity_persistence": (
+                f"{best.get('liquidity_persistence_aligned',0)}/{best.get('liquidity_persistence_required',LIQ_TARGET_PERSIST_REQUIRED)}"
                 if best else "0/0"
             ),
             "build_version": BUILD_VERSION,
@@ -4192,19 +4192,19 @@ def scan_once():
 
         if alerts:
             state["status"] = (
-                f"V6: {alerts} research-validated signal ready"
+                f"V7: {alerts} liquidity-target signal ready"
             )
 
         elif best:
             state["status"] = (
-                f"V6 best: {best['symbol']} "
+                f"V7 best: {best['symbol']} "
                 f"{'LONG' if best['signal']=='BUY' else 'SHORT'} "
                 f"{best['score']}/100 — {best['status']}"
             )
 
         else:
             state["status"] = (
-                f"V6 waiting — main block: {top_block}"
+                f"V7 waiting — main block: {top_block}"
             )
 
         if (
@@ -4218,7 +4218,7 @@ def scan_once():
     save_state_snapshot()
 
     scan_log(
-        f"V6 SCAN COMPLETE in {elapsed}s "
+        f"V7 SCAN COMPLETE in {elapsed}s "
         f"| alerts={alerts} "
         f"| best={best['symbol'] if best else 'NONE'} "
         f"| blocked={blocked_counts}"
@@ -4455,7 +4455,7 @@ def telegram_hourly_status_loop():
 
 
 def trade_monitor_loop():
-    scan_log("V6 LIVE TP/SL MONITOR STARTED")
+    scan_log("V7 LIVE TP/SL MONITOR STARTED")
 
     while True:
         try:
@@ -4485,8 +4485,8 @@ def scanner_loop():
     telegram_async(
         f"🟢 RAZA SHAH SIGNAL V2\n"
         f"LIVE PAPER TEST ACTIVE\n\n"
-        f"Logic: 4H+1H Momentum → 15M Structure → 5M Trigger → "
-        f"Persistent Flow/Book/OI\n"
+        f"Logic: Liquidity Stop-Pool → HTF Support → 15M Path → 5M Trigger → "
+        f"Persistent Liquidity Target + Flow/Book/OI\n"
         f"Exchange: BITGET FUTURES\n"
         f"Top Coins: {TOP_COINS}\n"
         f"Deep Scan: {DEEP_CHECK}\n"
