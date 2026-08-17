@@ -25,23 +25,23 @@ from flask import (
 )
 
 # ============================================================
-# RAZA SHAH SIGNAL — V6 RESEARCH FLOW / MOMENTUM
+# RAZA SHAH SIGNAL — V10 SMART MONEY EXECUTION
 # BITGET USDT-M FUTURES
 # SIGNAL ONLY — NO AUTO ORDERS
 #
 # CORE FLOW:
-# 4H REGIME
-# -> 1H STRUCTURE
-# -> 15M CONTINUATION / BREAKOUT / LIQUIDITY SETUP
-# -> 5M EXECUTION TIMING (BONUS, NOT HARD VETO)
-# -> LIVE FLOW / ORDER BOOK / OI
-# -> DYNAMIC RISK
+# 4H REGIME + 1H STRUCTURE SELECT DIRECTION
+# -> 15M SMART-MONEY PULLBACK / BREAKOUT / LIQUIDITY SWEEP
+# -> LIQUIDITY POOL = TARGET, NOT DIRECTION
+# -> 5M EXECUTION TIMING
+# -> LIVE EXECUTED FLOW / ORDER BOOK / OI
+# -> ADAPTIVE WALL TP + DYNAMIC RISK
 # -> QUALITY SCORE + BTC CONTEXT (RANKING ONLY)
 # -> PAPER SIGNAL
 # ============================================================
 
-STRATEGY_VERSION = "V8_LOGIC_CONFIRMED_20260815"
-BUILD_VERSION = "V9_1_GENERATOR_DIAGNOSTIC_20260817"
+STRATEGY_VERSION = "V10_SMART_MONEY_20260817"
+BUILD_VERSION = "V10_SMART_MONEY_EXECUTION_UNLOCK_20260817"
 REVERSAL_TEST_START_UTC = "2026-08-15T14:58:00+00:00"  # V8 clean forward-test start; old versions remain archived
 
 BITGET_BASE = "https://api.bitget.com"
@@ -49,11 +49,11 @@ BITGET_PRODUCT_TYPE = "usdt-futures"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
-TOP_COINS = int(os.getenv("TOP_COINS", "100"))
-DEEP_CHECK = int(os.getenv("DEEP_CHECK", "60"))
+TOP_COINS = int(os.getenv("TOP_COINS", "150"))
+DEEP_CHECK = int(os.getenv("DEEP_CHECK", "100"))
 
 LIGHT_SCAN_WORKERS = int(os.getenv("LIGHT_SCAN_WORKERS", "8"))
-DEEP_SCAN_WORKERS = int(os.getenv("DEEP_SCAN_WORKERS", "4"))
+DEEP_SCAN_WORKERS = int(os.getenv("DEEP_SCAN_WORKERS", "6"))
 SCAN_HTTP_TIMEOUT = float(os.getenv("SCAN_HTTP_TIMEOUT", "12"))
 SIGNAL_COOLDOWN_SECONDS = int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "14400"))
 TRADE_MONITOR_INTERVAL = int(os.getenv("TRADE_MONITOR_INTERVAL", "20"))
@@ -174,12 +174,23 @@ LIQ_PATH_BLOCK_WALL_RATIO = float(os.getenv("LIQ_PATH_BLOCK_WALL_RATIO", "5.0"))
 LIQ_PATH_BLOCK_FRACTION = float(os.getenv("LIQ_PATH_BLOCK_FRACTION", "0.75"))
 # V8.1 adaptive wall handling: only an extreme, very-near wall is a hard veto.
 # Manageable walls are converted into a closer TP candidate instead of killing the setup.
-LIQ_HARD_BLOCK_WALL_RATIO = float(os.getenv("LIQ_HARD_BLOCK_WALL_RATIO", "9.0"))
-LIQ_HARD_BLOCK_FRACTION = float(os.getenv("LIQ_HARD_BLOCK_FRACTION", "0.35"))
+LIQ_HARD_BLOCK_WALL_RATIO = float(os.getenv("LIQ_HARD_BLOCK_WALL_RATIO", "12.0"))
+LIQ_HARD_BLOCK_FRACTION = float(os.getenv("LIQ_HARD_BLOCK_FRACTION", "0.20"))
 LIQ_ADAPTIVE_WALL_TP_BUFFER_PCT = float(os.getenv("LIQ_ADAPTIVE_WALL_TP_BUFFER_PCT", "0.0005"))
 LIQ_TARGET_TP_BUFFER_ATR = float(os.getenv("LIQ_TARGET_TP_BUFFER_ATR", "0.12"))
 LIQ_ACTIVE_WALL_TRAIL_MIN_R = float(os.getenv("LIQ_ACTIVE_WALL_TRAIL_MIN_R", "0.50"))
 LIQ_ACTIVE_FLIP_RATIO = float(os.getenv("LIQ_ACTIVE_FLIP_RATIO", "1.35"))
+
+# V10 SMART-MONEY DIRECTION MODEL
+# Direction comes from 4H regime + 1H structure. Liquidity is a target/context layer,
+# not the source of direction. This reduces over-blocking from stop-pool dominance.
+SMART_HTF_MIN_STRUCTURE_STRENGTH = int(os.getenv("SMART_HTF_MIN_STRUCTURE_STRENGTH", "62"))
+SMART_LIQ_TARGET_MIN_SCORE = float(os.getenv("SMART_LIQ_TARGET_MIN_SCORE", "3.00"))
+SMART_LIQ_STRONG_SCORE = float(os.getenv("SMART_LIQ_STRONG_SCORE", "4.00"))
+SMART_ALLOW_FIRST_SEEN_TARGET = (
+    os.getenv("SMART_ALLOW_FIRST_SEEN_TARGET", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
 
 # Net reward model after estimated round-trip fee/slippage.
 NET_RR_TARGET = float(os.getenv("NET_RR_TARGET", "1.80"))
@@ -3994,47 +4005,165 @@ def research_quality_score(side, reg, st, setup, trigger, delta, book, spread, o
 
 
 # ============================================================
+# V10 SMART-MONEY BIAS / LIQUIDITY PATH
+# ============================================================
+
+def smart_money_direction(reg, st):
+    """Choose direction from slow market structure, not from liquidity-pool dominance."""
+    regime = str((reg or {}).get("regime") or "SIDEWAYS")
+    structure = str((st or {}).get("structure") or "RANGE")
+    strength = int((st or {}).get("strength") or 0)
+    bull_points = int((st or {}).get("bull_points") or 0)
+    bear_points = int((st or {}).get("bear_points") or 0)
+
+    # Highest-quality alignment.
+    if regime == "BULL" and structure == "BULL_MOMENTUM":
+        return "BUY", "4H_BULL_1H_BULL"
+    if regime == "BEAR" and structure == "BEAR_MOMENTUM":
+        return "SELL", "4H_BEAR_1H_BEAR"
+
+    # 4H trend can remain valid while 1H is consolidating/pulling back.
+    if regime == "BULL" and structure == "RANGE" and bull_points >= bear_points + 2:
+        return "BUY", "4H_BULL_1H_PULLBACK"
+    if regime == "BEAR" and structure == "RANGE" and bear_points >= bull_points + 2:
+        return "SELL", "4H_BEAR_1H_PULLBACK"
+
+    # When 4H is sideways, allow only a genuinely strong 1H momentum structure.
+    if regime == "SIDEWAYS" and strength >= SMART_HTF_MIN_STRUCTURE_STRENGTH:
+        if structure == "BULL_MOMENTUM":
+            return "BUY", "1H_BULL_BREAK_FROM_4H_RANGE"
+        if structure == "BEAR_MOMENTUM":
+            return "SELL", "1H_BEAR_BREAK_FROM_4H_RANGE"
+
+    return None, "NO_HTF_SMART_MONEY_BIAS"
+
+
+def smart_money_liquidity_path(liq_map, side, price, heat):
+    """Re-evaluate the path for the HTF-selected side.
+
+    A normal opposing wall is treated as an adaptive TP reference. Only a very
+    large wall extremely near entry is a hard veto.
+    """
+    target = (liq_map.get("up") if side == "BUY" else liq_map.get("down")) or {}
+    target_price = float(target.get("price") or 0)
+    target_score = float(target.get("score") or 0)
+    if target_price <= 0 or target_score < SMART_LIQ_TARGET_MIN_SCORE:
+        return False, "NO_VALID_LIQUIDITY_TARGET", None
+
+    target_dist = max(float(target.get("distance_pct") or 0), 1e-9)
+    heat = heat or {}
+    if side == "BUY":
+        wall = heat.get("ask_wall") or {}
+        wall_px = float(wall.get("price") or 0)
+        wall_ratio = float(wall.get("ratio_to_median") or 0)
+        wall_dist = ((wall_px - price) / price) if wall_px > price else 999
+        before_target = wall_px > price and wall_px < target_price
+        wall_side = "ASK"
+        hard_reason = "EXTREME_ASK_WALL_NEAR_ENTRY"
+    else:
+        wall = heat.get("bid_wall") or {}
+        wall_px = float(wall.get("price") or 0)
+        wall_ratio = float(wall.get("ratio_to_median") or 0)
+        wall_dist = ((price - wall_px) / price) if 0 < wall_px < price else 999
+        before_target = 0 < wall_px < price and wall_px > target_price
+        wall_side = "BID"
+        hard_reason = "EXTREME_BID_WALL_NEAR_ENTRY"
+
+    adaptive_wall = None
+    if before_target and wall_ratio >= LIQ_PATH_BLOCK_WALL_RATIO:
+        adaptive_wall = {
+            "side": wall_side,
+            "price": wall_px,
+            "ratio": wall_ratio,
+            "distance_pct": wall_dist,
+        }
+        # V10: hard-block only an exceptional wall sitting in the nearest 20%
+        # of the path to the target. Otherwise let risk logic pull TP in front of it.
+        if wall_ratio >= LIQ_HARD_BLOCK_WALL_RATIO and wall_dist <= target_dist * LIQ_HARD_BLOCK_FRACTION:
+            return False, hard_reason, adaptive_wall
+
+    return True, None, adaptive_wall
+
+
+# ============================================================
 # V6 DEEP SCAN — HTF MOMENTUM -> STRUCTURE -> PERSISTENT FLOW
 # ============================================================
 
 def _deep_scan_one(item):
     _,symbol,lm,btc_regime=item
     try:
+        # V10: slow structure selects direction first.
         reg=regime_4h(symbol); st=structure_1h(symbol)
+        side,direction_basis=smart_money_direction(reg,st)
+        if side not in ("BUY","SELL"):
+            return {"symbol":symbol,"blocked":"NO_HTF_SMART_MONEY_BIAS","score":0,"lm":lm,"regime":reg,"structure":st,"error":None}
+
         heat=orderbook_heat_metrics(symbol)
-        if not heat: return {"symbol":symbol,"blocked":"NO_ORDER_BOOK","score":0,"error":None}
+        if not heat:
+            return {"symbol":symbol,"side":side,"blocked":"NO_ORDER_BOOK","score":0,"error":None}
         price=float(heat.get("mid") or current_price(symbol)); spread=float(heat["spread_bps"]); book=float(heat["book_imb"])
-        liq_map=liquidity_target_map_15m(symbol,price=price,heat=heat); side=liq_map.get("preferred_side")
-        if side not in ("BUY","SELL"): return {"symbol":symbol,"blocked":"NO_LIQUIDITY_DOMINANCE","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"error":None}
-        if liq_map.get("path_blocked"): return {"symbol":symbol,"side":side,"blocked":liq_map.get("path_block_reason") or "LIQUIDITY_PATH_BLOCKED","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"error":None}
-        direction_basis="BUY_SIDE_STOPS_ABOVE_DOMINANT" if side=="BUY" else "SELL_SIDE_STOPS_BELOW_DOMINANT"
-        liq_hist=update_liquidity_target_history(symbol,side,liq_map); liq_persist=liquidity_target_persistence(side,liq_hist)
-        if not liq_persist.get("persistent"): return {"symbol":symbol,"side":side,"blocked":"LIQUIDITY_TARGET_NOT_PERSISTENT","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"error":None}
-        htf=_htf_liquidity_support(side,reg,st)
-        if htf.get("hard_conflict"): return {"symbol":symbol,"side":side,"blocked":"LIQ_TARGET_AGAINST_4H_1H","score":0,"liquidity_map":liq_map,"error":None}
-        if not htf.get("has_support"): return {"symbol":symbol,"side":side,"blocked":"HTF_NO_SUPPORT_FOR_LIQ_TARGET","score":0,"liquidity_map":liq_map,"error":None}
+
+        # Liquidity is now destination/context, not direction.
+        liq_map=liquidity_target_map_15m(symbol,price=price,heat=heat)
+        path_ok,path_reason,adaptive_wall=smart_money_liquidity_path(liq_map,side,price,heat)
+        if adaptive_wall:
+            liq_map["adaptive_wall"]=adaptive_wall
+        liq_map["preferred_side"]=side  # only for downstream risk/path compatibility
+        liq_map["path_blocked"]=not path_ok
+        liq_map["path_block_reason"]=path_reason
+        if not path_ok:
+            return {"symbol":symbol,"side":side,"blocked":path_reason or "LIQUIDITY_PATH_BLOCKED","score":0,"lm":lm,"regime":reg,"structure":st,"liquidity_map":liq_map,"error":None}
+
+        selected=(liq_map.get("up") if side=="BUY" else liq_map.get("down")) or {}
+        target_score=float(selected.get("score") or 0)
+
+        # Target persistence is confirmation quality, not an automatic veto.
+        liq_hist=update_liquidity_target_history(symbol,side,liq_map)
+        liq_persist=liquidity_target_persistence(side,liq_hist)
+        liq_quality_ok=bool(
+            liq_persist.get("persistent")
+            or (SMART_ALLOW_FIRST_SEEN_TARGET and target_score >= SMART_LIQ_STRONG_SCORE)
+        )
+
         rsi15=timeframe_rsi(symbol,"15m")
-        if side=="BUY" and rsi15>=RSI_LONG_CHASE_MAX: return {"symbol":symbol,"side":side,"blocked":"RSI_LONG_OVEREXTENDED","score":0,"rsi_15m":rsi15,"liquidity_map":liq_map,"error":None}
-        if side=="SELL" and rsi15<=RSI_SHORT_CHASE_MIN: return {"symbol":symbol,"side":side,"blocked":"RSI_SHORT_OVEREXTENDED","score":0,"rsi_15m":rsi15,"liquidity_map":liq_map,"error":None}
+        if side=="BUY" and rsi15>=RSI_LONG_CHASE_MAX:
+            return {"symbol":symbol,"side":side,"blocked":"RSI_LONG_OVEREXTENDED","score":0,"rsi_15m":rsi15,"liquidity_map":liq_map,"error":None}
+        if side=="SELL" and rsi15<=RSI_SHORT_CHASE_MIN:
+            return {"symbol":symbol,"side":side,"blocked":"RSI_SHORT_OVEREXTENDED","score":0,"rsi_15m":rsi15,"liquidity_map":liq_map,"error":None}
+
+        # Smart-money setup: pullback continuation, breakout/retest, or liquidity sweep/reclaim.
         setup=liquidity_setup_15m(symbol,side)
-        if not setup.get("valid"): return {"symbol":symbol,"side":side,"blocked":"15M_NO_PATH_SETUP","score":0,"setup":setup,"liquidity_map":liq_map,"error":None}
-        if float(setup.get("vol_ratio") or 0)<MIN_VOL_RATIO: return {"symbol":symbol,"side":side,"blocked":"LOW_VOLUME","score":0,"setup":setup,"liquidity_map":liq_map,"error":None}
+        if not setup.get("valid"):
+            return {"symbol":symbol,"side":side,"blocked":"15M_NO_SMART_MONEY_SETUP","score":0,"setup":setup,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"error":None}
+        if float(setup.get("vol_ratio") or 0)<MIN_VOL_RATIO:
+            return {"symbol":symbol,"side":side,"blocked":"LOW_VOLUME","score":0,"setup":setup,"liquidity_map":liq_map,"error":None}
+
+        # Executed flow + visible book authenticate the setup.
         whale=flow_metrics_detailed(symbol); delta=float(whale["delta"]); buy=float(whale["buy"]); sell=float(whale["sell"]); oi=float(oi_change_pct(symbol))
         flow_hist=update_flow_history(symbol,delta,book,oi,whale.get("whale_delta",0.0)); flow_persist=flow_persistence(side,flow_hist)
         trigger=entry_trigger_5m(symbol,side)
-        if not trigger.get("valid"): return {"symbol":symbol,"side":side,"blocked":"5M_TRIGGER_WAIT","score":0,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"spread":spread,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
+        if not trigger.get("valid"):
+            return {"symbol":symbol,"side":side,"blocked":"5M_TRIGGER_WAIT","score":0,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"spread":spread,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
+
         live_ok,live_reasons=research_live_confirmation(side,delta,book,spread,oi,whale.get("whale_delta",0.0),flow_persist)
         q=liquidity_hunter_quality_score(side,reg,st,setup,trigger,delta,book,spread,oi,whale,flow_persist,liq_map,liq_persist,btc_regime)
-        # V8: NO numeric score gate. Full logic confirmation is the entry gate.
-        trade_ready=bool(live_ok and liq_persist.get("persistent"))
+
         risk=liquidity_hunter_risk(price,side,setup,liq_map,heat=heat,whale=whale)
-        if risk is None: return {"symbol":symbol,"side":side,"blocked":"LIQUIDITY_TARGET_RR_NO_ROOM","score":q,"setup":setup,"trigger":trigger,"liquidity_map":liq_map,"error":None}
+        if risk is None:
+            return {"symbol":symbol,"side":side,"blocked":"LIQUIDITY_TARGET_RR_NO_ROOM","score":q,"setup":setup,"trigger":trigger,"liquidity_map":liq_map,"error":None}
+
+        # V10 entry gate: HTF bias + SMC setup + 5m trigger + real flow/book/OI + viable target.
+        # Liquidity persistence is required unless the target is already very strong on first observation.
+        trade_ready=bool(live_ok and liq_quality_ok)
+        if live_ok and not liq_quality_ok:
+            live_reasons=list(live_reasons)+["LIQUIDITY_TARGET_BUILDING"]
+
         v9_shadow=v9_shadow_snapshot(symbol,side,price,spread,book,delta,oi,whale.get("whale_delta",0.0),flow_persist,risk=risk)
-        selected=(liq_map.get("up") if side=="BUY" else liq_map.get("down")) or {}
-        candidate={"time_utc":datetime.now(timezone.utc).isoformat(),"strategy_version":STRATEGY_VERSION,"build_version":BUILD_VERSION,"exchange":"BITGET","data_source":"Bitget crypto-only USDT-M Futures","symbol":symbol,"signal":side,"score":q,"risk_label":risk_label(q),"price":price,"research_mode":"LIQUIDITY_STOP_POOL_HUNTER","direction_basis":direction_basis,"regime_4h":reg.get("regime","SIDEWAYS"),"structure_1h":st.get("structure","RANGE"),"structure_1h_strength":st.get("strength"),"setup_15m":setup.get("setup","NONE"),"trigger_5m":trigger.get("trigger","WAIT"),"trigger_choch":trigger.get("choch",False),"rsi_15m":round(float(rsi15),2),"reversal_reason":"RSI_CONTEXT_ONLY","sweep_penetration_pct":setup.get("sweep_penetration_pct",0.0),"liquidity_target_price":float(selected.get("price") or 0),"liquidity_target_score":float(selected.get("score") or 0),"liquidity_target_kind":selected.get("kind"),"liquidity_target_distance_pct":float(selected.get("distance_pct") or 0),"liquidity_up_score":float(liq_map.get("up_score") or 0),"liquidity_down_score":float(liq_map.get("down_score") or 0),"liquidity_dominance_ratio":float(liq_map.get("dominance_ratio") or 0),"liquidity_dominance_gap":float(liq_map.get("dominance_gap") or 0),"liquidity_persistence_samples":liq_persist.get("samples",0),"liquidity_persistence_aligned":liq_persist.get("aligned",0),"liquidity_persistence_required":liq_persist.get("required",LIQ_TARGET_PERSIST_REQUIRED),"liquidity_persistent":liq_persist.get("persistent",False),"flow_delta":delta,"buy_usd_60s":buy,"sell_usd_60s":sell,"spread_bps":spread,"book_imb":book,"oi_change_pct":oi,"flow_persistence_samples":flow_persist.get("samples",0),"flow_persistence_aligned":flow_persist.get("aligned",0),"flow_persistence_required":flow_persist.get("required",FLOW_PERSIST_REQUIRED),"flow_persistent":flow_persist.get("persistent",False),"avg_flow_dir":flow_persist.get("avg_flow_dir",0.0),"avg_book_dir":flow_persist.get("avg_book_dir",0.0),"btc_regime":str((btc_regime or {}).get("regime") or "SIDEWAYS"),"atr_15m_pct":setup["atr_pct"],"vol_ratio":setup["vol_ratio"],"risk_pct":risk["risk_pct"],"capital_risk_pct":risk.get("capital_risk_pct",CAPITAL_RISK_PER_TRADE),"effective_leverage":risk.get("effective_leverage",0.0),"position_notional":risk.get("position_notional",0.0),"rr":risk["rr"],"tp":risk["tp"],"sl":risk["sl"],"tp_source":risk.get("tp_source"),"sl_source":risk.get("sl_source"),"whale_delta":risk.get("whale_delta",whale.get("whale_delta",0.0)),"bid_wall_price":risk.get("bid_wall_price",0.0),"ask_wall_price":risk.get("ask_wall_price",0.0),"bid_wall_ratio":risk.get("bid_wall_ratio",0.0),"ask_wall_ratio":risk.get("ask_wall_ratio",0.0),"v9_liquidity_state":v9_shadow.get("liquidity_state"),"v9_quarter_opening_window":v9_shadow.get("opening_window",False),"v9_seconds_from_quarter_open":v9_shadow.get("seconds_from_quarter_open"),"v9_expected_move_proxy_pct":v9_shadow.get("expected_move_proxy_pct",0.0),"v9_cost_buffer_required_pct":v9_shadow.get("cost_buffer_required_pct",0.0),"v9_edge_over_cost":v9_shadow.get("edge_over_cost",False),"hard_confirm":trade_ready,"blocked_reasons":live_reasons,"status":"TRADE READY" if trade_ready else "WAIT LIVE CONFIRMATION"}
-        return {"symbol":symbol,"side":side,"score":q,"candidate":candidate,"blocked":None if trade_ready else "LIVE_CONFIRM","lm":lm,"regime":reg,"structure":st,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
+        candidate={"time_utc":datetime.now(timezone.utc).isoformat(),"strategy_version":STRATEGY_VERSION,"build_version":BUILD_VERSION,"exchange":"BITGET","data_source":"Bitget crypto-only USDT-M Futures","symbol":symbol,"signal":side,"score":q,"risk_label":risk_label(q),"price":price,"research_mode":"SMART_MONEY_HTF_LIQUIDITY_FLOW","direction_basis":direction_basis,"regime_4h":reg.get("regime","SIDEWAYS"),"structure_1h":st.get("structure","RANGE"),"structure_1h_strength":st.get("strength"),"setup_15m":setup.get("setup","NONE"),"trigger_5m":trigger.get("trigger","WAIT"),"trigger_choch":trigger.get("choch",False),"rsi_15m":round(float(rsi15),2),"reversal_reason":"RSI_ANTI_CHASE_ONLY","sweep_penetration_pct":setup.get("sweep_penetration_pct",0.0),"liquidity_target_price":float(selected.get("price") or 0),"liquidity_target_score":target_score,"liquidity_target_kind":selected.get("kind"),"liquidity_target_distance_pct":float(selected.get("distance_pct") or 0),"liquidity_up_score":float(liq_map.get("up_score") or 0),"liquidity_down_score":float(liq_map.get("down_score") or 0),"liquidity_dominance_ratio":float(liq_map.get("dominance_ratio") or 0),"liquidity_dominance_gap":float(liq_map.get("dominance_gap") or 0),"liquidity_persistence_samples":liq_persist.get("samples",0),"liquidity_persistence_aligned":liq_persist.get("aligned",0),"liquidity_persistence_required":liq_persist.get("required",LIQ_TARGET_PERSIST_REQUIRED),"liquidity_persistent":liq_persist.get("persistent",False),"flow_delta":delta,"buy_usd_60s":buy,"sell_usd_60s":sell,"spread_bps":spread,"book_imb":book,"oi_change_pct":oi,"flow_persistence_samples":flow_persist.get("samples",0),"flow_persistence_aligned":flow_persist.get("aligned",0),"flow_persistence_required":flow_persist.get("required",FLOW_PERSIST_REQUIRED),"flow_persistent":flow_persist.get("persistent",False),"avg_flow_dir":flow_persist.get("avg_flow_dir",0.0),"avg_book_dir":flow_persist.get("avg_book_dir",0.0),"btc_regime":str((btc_regime or {}).get("regime") or "SIDEWAYS"),"atr_15m_pct":setup["atr_pct"],"vol_ratio":setup["vol_ratio"],"risk_pct":risk["risk_pct"],"capital_risk_pct":risk.get("capital_risk_pct",CAPITAL_RISK_PER_TRADE),"effective_leverage":risk.get("effective_leverage",0.0),"position_notional":risk.get("position_notional",0.0),"rr":risk["rr"],"tp":risk["tp"],"sl":risk["sl"],"tp_source":risk.get("tp_source"),"sl_source":risk.get("sl_source"),"whale_delta":risk.get("whale_delta",whale.get("whale_delta",0.0)),"bid_wall_price":risk.get("bid_wall_price",0.0),"ask_wall_price":risk.get("ask_wall_price",0.0),"bid_wall_ratio":risk.get("bid_wall_ratio",0.0),"ask_wall_ratio":risk.get("ask_wall_ratio",0.0),"v9_liquidity_state":v9_shadow.get("liquidity_state"),"v9_quarter_opening_window":v9_shadow.get("opening_window",False),"v9_seconds_from_quarter_open":v9_shadow.get("seconds_from_quarter_open"),"v9_expected_move_proxy_pct":v9_shadow.get("expected_move_proxy_pct",0.0),"v9_cost_buffer_required_pct":v9_shadow.get("cost_buffer_required_pct",0.0),"v9_edge_over_cost":v9_shadow.get("edge_over_cost",False),"hard_confirm":trade_ready,"blocked_reasons":live_reasons,"status":"TRADE READY" if trade_ready else "WAIT SMART-MONEY CONFIRMATION"}
+        return {"symbol":symbol,"side":side,"score":q,"candidate":candidate,"blocked":None if trade_ready else ("LIQUIDITY_TARGET_BUILDING" if live_ok and not liq_quality_ok else "LIVE_CONFIRM"),"lm":lm,"regime":reg,"structure":st,"setup":setup,"trigger":trigger,"delta":delta,"book":book,"oi":oi,"liquidity_map":liq_map,"liquidity_persistence":liq_persist,"flow_persistence":flow_persist,"error":None}
     except Exception as e:
         return {"symbol":symbol,"error":f"{type(e).__name__}: {e}"}
+
 
 # ============================================================
 # V9.1 GENERATOR DIAGNOSTICS
@@ -4054,6 +4183,8 @@ def _generator_observation(result):
     stage_score = {
         "NO_ORDER_BOOK": 5,
         "NO_LIQUIDITY_DOMINANCE": 20,
+        "NO_HTF_SMART_MONEY_BIAS": 24,
+        "NO_VALID_LIQUIDITY_TARGET": 38,
         "EXTREME_ASK_WALL_NEAR_ENTRY": 45,
         "EXTREME_BID_WALL_NEAR_ENTRY": 45,
         "LIQUIDITY_PATH_BLOCKED": 45,
@@ -4063,6 +4194,8 @@ def _generator_observation(result):
         "RSI_LONG_OVEREXTENDED": 60,
         "RSI_SHORT_OVEREXTENDED": 60,
         "15M_NO_PATH_SETUP": 63,
+        "15M_NO_SMART_MONEY_SETUP": 63,
+        "LIQUIDITY_TARGET_BUILDING": 78,
         "LOW_VOLUME": 66,
         "5M_TRIGGER_WAIT": 72,
         "LIQUIDITY_TARGET_RR_NO_ROOM": 76,
@@ -4109,11 +4242,11 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V9 SHADOW-RESEARCH / V8 EXECUTION SCAN START")
+    scan_log("RAZA V10 SMART-MONEY EXECUTION SCAN START")
 
     with state_lock:
         state["status"] = (
-            f"V9 shadow research + V8 execution scanning Top {TOP_COINS} crypto futures..."
+            f"V10 smart-money execution scanning Top {TOP_COINS} crypto futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
