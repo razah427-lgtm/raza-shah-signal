@@ -4917,10 +4917,42 @@ def telegram_hourly_status_loop():
             scan_log(f"HOURLY STATUS ERROR: {e}")
 
 
+# ============================================================
+# V10.1 ALWAYS-ON BACKGROUND SERVICE SUPERVISOR
+# Browser-independent process threads with watchdog recovery.
+# NOTE: this keeps services alive while the Render web process is alive;
+# platform-level sleeping/stopping still requires an always-on Render instance.
+# ============================================================
+
+_bg_lock = threading.Lock()
+_bg_threads = {}
+_scanner_heartbeat_ts = 0.0
+_trade_monitor_heartbeat_ts = 0.0
+_hourly_heartbeat_ts = 0.0
+WATCHDOG_INTERVAL = int(os.getenv("WATCHDOG_INTERVAL", "30"))
+SCANNER_STALE_SECONDS = int(os.getenv("SCANNER_STALE_SECONDS", str(max(900, SCAN_INTERVAL * 3))))
+
+def _thread_alive(name):
+    t = _bg_threads.get(name)
+    return bool(t and t.is_alive())
+
+def _start_bg_thread(name, target):
+    with _bg_lock:
+        existing = _bg_threads.get(name)
+        if existing and existing.is_alive():
+            return False
+        t = threading.Thread(target=target, name=f"raza-{name}", daemon=True)
+        _bg_threads[name] = t
+        t.start()
+        scan_log(f"BACKGROUND SERVICE STARTED: {name}")
+        return True
+
 def trade_monitor_loop():
-    scan_log("V7 LIVE TP/SL MONITOR STARTED")
+    global _trade_monitor_heartbeat_ts
+    scan_log("V10.1 LIVE TP/SL MONITOR STARTED")
 
     while True:
+        _trade_monitor_heartbeat_ts = time.time()
         try:
             check_open_trades()
 
@@ -4934,6 +4966,7 @@ def trade_monitor_loop():
 
 
 def scanner_loop():
+    global _scanner_heartbeat_ts
     with state_lock:
         state["running"] = True
         state["strategy_version"] = STRATEGY_VERSION
@@ -4973,10 +5006,12 @@ def scanner_loop():
     )
 
     while True:
+        _scanner_heartbeat_ts = time.time()
         start = time.time()
 
         try:
             scan_once()
+            _scanner_heartbeat_ts = time.time()
 
         except Exception as e:
             scan_log(
@@ -5003,6 +5038,40 @@ def scanner_loop():
 
         save_state_snapshot()
         time.sleep(wait)
+
+def background_watchdog_loop():
+    global _scanner_heartbeat_ts
+    scan_log("V10.1 BACKGROUND WATCHDOG STARTED")
+    while True:
+        try:
+            now = time.time()
+            if not _thread_alive("scanner"):
+                scan_log("WATCHDOG: scanner thread stopped — restarting")
+                _start_bg_thread("scanner", scanner_loop)
+            elif _scanner_heartbeat_ts and (now - _scanner_heartbeat_ts) > SCANNER_STALE_SECONDS:
+                # Python cannot safely kill a stuck thread. Mark it visibly stale;
+                # Render/process restart is safer than spawning duplicate scanners.
+                with state_lock:
+                    state["running"] = False
+                    state["status"] = "Scanner stale — process restart required"
+                    state["last_error"] = f"watchdog stale for {int(now-_scanner_heartbeat_ts)}s"
+                save_state_snapshot()
+                scan_log("WATCHDOG: scanner stale; refusing duplicate scanner thread")
+            if not _thread_alive("trade_monitor"):
+                scan_log("WATCHDOG: trade monitor stopped — restarting")
+                _start_bg_thread("trade_monitor", trade_monitor_loop)
+            if not _thread_alive("hourly_status"):
+                scan_log("WATCHDOG: hourly status stopped — restarting")
+                _start_bg_thread("hourly_status", telegram_hourly_status_loop)
+        except Exception as e:
+            scan_log(f"WATCHDOG ERROR: {type(e).__name__}: {e}")
+        time.sleep(max(10, WATCHDOG_INTERVAL))
+
+def ensure_background_services():
+    _start_bg_thread("scanner", scanner_loop)
+    _start_bg_thread("hourly_status", telegram_hourly_status_loop)
+    _start_bg_thread("trade_monitor", trade_monitor_loop)
+    _start_bg_thread("watchdog", background_watchdog_loop)
 
 # ============================================================
 # WEB ROUTES
@@ -5402,20 +5471,9 @@ def sw():
 
 init_db()
 
-threading.Thread(
-    target=scanner_loop,
-    daemon=True,
-).start()
-
-threading.Thread(
-    target=telegram_hourly_status_loop,
-    daemon=True,
-).start()
-
-threading.Thread(
-    target=trade_monitor_loop,
-    daemon=True,
-).start()
+# V10.1: start at module import (Gunicorn/Render boot), not from a browser request.
+# Closing the dashboard therefore does not stop the scanner while the web process is alive.
+ensure_background_services()
 
 # ============================================================
 # LOCAL RUN
