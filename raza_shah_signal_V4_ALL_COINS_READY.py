@@ -50,7 +50,7 @@ from flask import (
 # Risk decides whether we are allowed to participate.
 # ============================================================
 
-STRATEGY_VERSION = "V4_LOGIC"
+STRATEGY_VERSION = "V5_SIMPLE_LIQUIDITY"
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -65,6 +65,17 @@ SCAN_ALL_COINS = (
 )
 TOP_COINS = int(os.getenv("TOP_COINS", "20"))
 DEEP_CHECK = int(os.getenv("DEEP_CHECK", "20"))
+# In ALL-COINS mode we still light-scan the full Bitget universe, but only
+# the strongest ranked candidates receive the expensive multi-timeframe deep scan.
+DEEP_SCAN_LIMIT = int(os.getenv("DEEP_SCAN_LIMIT", "50"))
+
+# V5 SIMPLE LIQUIDITY FORMULA
+SIMPLE_MIN_CONFLUENCE = int(os.getenv("SIMPLE_MIN_CONFLUENCE", "3"))
+SIMPLE_ZONE_ATR = float(os.getenv("SIMPLE_ZONE_ATR", "0.85"))
+SIMPLE_WHALE_NEAR_ATR = float(os.getenv("SIMPLE_WHALE_NEAR_ATR", "1.25"))
+SIMPLE_MIN_VOL_RATIO = float(os.getenv("SIMPLE_MIN_VOL_RATIO", "0.70"))
+SIMPLE_MAX_SPREAD_BPS = float(os.getenv("SIMPLE_MAX_SPREAD_BPS", "4.0"))
+SIMPLE_MIN_RR = float(os.getenv("SIMPLE_MIN_RR", "1.50"))
 WATCHLIST_LIMIT = int(os.getenv("WATCHLIST_LIMIT", "20"))
 
 LIGHT_SCAN_WORKERS = int(os.getenv("LIGHT_SCAN_WORKERS", "8"))
@@ -160,6 +171,7 @@ KSA_SESSION_END = int(os.getenv("KSA_SESSION_END", "22"))
 
 # Quality score is DISPLAY / RANKING ONLY. Hard gates create trades.
 STRONG_QUALITY_SCORE = int(os.getenv("STRONG_QUALITY_SCORE", "85"))
+# Kept for backward-compatible configuration/display; it is NOT a trade gate.
 MIN_READY_SCORE = int(os.getenv("MIN_READY_SCORE", "70"))
 
 # Paper tester
@@ -1675,22 +1687,48 @@ def performance():
 
 
 def forming_performance():
-    # A forming candidate is NOT treated as a paper trade.
-    # This avoids fake performance from non-entered setups.
+    # Live candidate statistics for the dashboard. A forming setup is NOT a trade.
+    with state_lock:
+        best = dict(state.get("best_candidate") or {})
+
+    if not best:
+        return {
+            "strategy_version": STRATEGY_VERSION,
+            "total_setups": 0, "closed_setups": 0, "wins": 0, "losses": 0,
+            "open": 0, "win_rate": 0.0, "avg_score": 0.0,
+            "total_profit": 0.0, "total_loss": 0.0, "net_pl": 0.0,
+            "note": "No current forming setup."
+        }
+
     return {
         "strategy_version": STRATEGY_VERSION,
-        "total_setups": 0,
+        "total_setups": 1,
         "closed_setups": 0,
         "wins": 0,
         "losses": 0,
-        "open": 0,
+        "open": 1 if best.get("status") != "TRADE READY" else 0,
         "win_rate": 0.0,
-        "avg_score": 0.0,
+        "avg_score": round(float(best.get("score") or 0), 2),
         "total_profit": 0.0,
         "total_loss": 0.0,
         "net_pl": 0.0,
-        "note": "V4 measures performance only after a fully validated trade entry.",
+        "symbol": best.get("symbol"),
+        "signal": best.get("signal"),
+        "status": best.get("status"),
+        "note": "Current best live setup; not counted as a trade until entry is validated."
     }
+
+
+def forming_history():
+    with state_lock:
+        best = dict(state.get("best_candidate") or {})
+    return [best] if best else []
+
+
+def recent_trade_history(limit=20):
+    rows = trade_rows(v2_only=True)
+    rows = list(reversed(rows[-max(1, limit):]))
+    return rows
 
 
 def score_performance():
@@ -1885,14 +1923,14 @@ def check_open_trades():
             label = "TP HIT / WIN" if result == "WIN" else "SL HIT / LOSS"
 
             telegram_async(
-                f"{icon} V4 {label} — {symbol}\n"
+                f"{icon} V5 {label} — {symbol}\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Side: {side}\n"
                 f"Entry: {entry:.8g}\n"
                 f"Exit: {px:.8g}\n"
                 f"TP: {tp:.8g}\n"
                 f"SL: {sl:.8g}\n\n"
-                f"📊 V4 PERFORMANCE\n"
+                f"📊 V5 PERFORMANCE\n"
                 f"Trades: {p['total_trades']}\n"
                 f"Wins: {p['wins']}\n"
                 f"Losses: {p['losses']}\n"
@@ -2090,307 +2128,263 @@ def _bias_from_context(reg, st):
     return "NEUTRAL"
 
 
-def multi_strategy_setup_15m(symbol, reg, st):
-    c = candle_dicts(symbol, "15m", 140)
-    if len(c) < 80:
-        raise RuntimeError(f"Not enough 15M candles for V4 setup {symbol}")
+def _spinning_top(c):
+    rng = max(float(c["high"]) - float(c["low"]), 1e-12)
+    body = abs(float(c["close"]) - float(c["open"]))
+    upper = float(c["high"]) - max(float(c["open"]), float(c["close"]))
+    lower = min(float(c["open"]), float(c["close"])) - float(c["low"])
+    return bool(body / rng <= 0.35 and upper >= body * 0.6 and lower >= body * 0.6)
 
-    last, prev, prev2 = c[-1], c[-2], c[-3]
-    closes = [x["close"] for x in c]
+
+def _rejection_candle(c, side):
+    rng = max(float(c["high"]) - float(c["low"]), 1e-12)
+    body = max(abs(float(c["close"]) - float(c["open"])), rng * 0.05)
+    upper = float(c["high"]) - max(float(c["open"]), float(c["close"]))
+    lower = min(float(c["open"]), float(c["close"])) - float(c["low"])
+    close_loc = (float(c["close"]) - float(c["low"])) / rng
+    if side == "BUY":
+        return bool(lower >= body * 1.2 and close_loc >= 0.55)
+    return bool(upper >= body * 1.2 and close_loc <= 0.45)
+
+
+def _recent_order_block(candles, atr, side):
+    # Objective proxy for the chart concept: the last opposite candle before an impulse.
+    arr = candles[-24:-2]
+    for i in range(len(arr) - 3, -1, -1):
+        c = arr[i]
+        later = arr[i + 1:min(len(arr), i + 4)]
+        if not later:
+            continue
+        if side == "BUY" and c["close"] < c["open"]:
+            if max(x["high"] for x in later) >= c["high"] + 0.65 * atr:
+                return float(c["low"]), float(c["high"])
+        if side == "SELL" and c["close"] > c["open"]:
+            if min(x["low"] for x in later) <= c["low"] - 0.65 * atr:
+                return float(c["low"]), float(c["high"])
+    return None
+
+
+def _whale_levels(symbol):
+    ob = raw_order_book(symbol, 100)
+    bids = ob.get("bids", [])[:35]
+    asks = ob.get("asks", [])[:35]
+    def strongest(rows):
+        best = None
+        for row in rows:
+            try:
+                p, q = float(row[0]), float(row[1])
+                usd = p * q
+                if best is None or usd > best[1]:
+                    best = (p, usd)
+            except Exception:
+                pass
+        return best or (0.0, 0.0)
+    bid_px, bid_usd = strongest(bids)
+    ask_px, ask_usd = strongest(asks)
+    return {"bid_price": bid_px, "bid_usd": bid_usd, "ask_price": ask_px, "ask_usd": ask_usd}
+
+
+def multi_strategy_setup_15m(symbol, reg, st):
+    """
+    V5 simple formula inferred from the user-provided examples:
+    liquidity/whale wall + order-block or prior-liquidity location + spinning-top/rejection reaction.
+    RSI is supportive, never a standalone entry.
+    """
+    c = candle_dicts(symbol, "15m", 120)
+    if len(c) < 60:
+        raise RuntimeError(f"Not enough 15M candles for simple setup {symbol}")
+
+    last, prev = c[-1], c[-2]
     price = float(last["close"])
-    e20 = ema(closes[-80:], 20)
-    e50 = ema(closes[-110:], 50)
-    atr15 = atr_value(c[-60:], 14)
+    atr15 = atr_value(c[-50:], 14)
     atr_pct = atr15 / price if price > 0 else 0.0
     vr = volume_ratio(c, 20)
-    volatility_ok = MIN_ATR_PCT <= atr_pct <= MAX_ATR_PCT
     ctx = _liquidity_context_15m(c)
-    prior_high, prior_low = ctx["prior_high"], ctx["prior_low"]
+    prior_high, prior_low = float(ctx["prior_high"]), float(ctx["prior_low"])
     rctx = rsi_context_15m(symbol)
-    bias = _bias_from_context(reg, st)
-    regime_name = reg.get("regime")
+    whales = _whale_levels(symbol)
 
-    base = {
-        "price": price,
-        "prior_high": prior_high,
-        "prior_low": prior_low,
-        "atr": atr15,
-        "atr_pct": atr_pct,
-        "vol_ratio": vr,
-        "volatility_ok": volatility_ok,
-        "bias": bias,
-        "rsi_15m": rctx["rsi_now"],
-        "rsi_context": rctx,
-    }
+    choices = []
+    for side in ("BUY", "SELL"):
+        ob_zone = _recent_order_block(c, atr15, side)
+        ob_near = False
+        ob_level = price
+        if ob_zone:
+            zl, zh = ob_zone
+            ob_level = (zl + zh) / 2.0
+            ob_near = (zl - SIMPLE_ZONE_ATR * atr15) <= price <= (zh + SIMPLE_ZONE_ATR * atr15)
 
-    if regime_name == "CHOP" or not volatility_ok:
-        return {
-            **base, "valid": False, "side": None, "strategy_type": "NONE", "setup": "NONE",
-            "reason": "CHOP" if regime_name == "CHOP" else "VOLATILITY",
-            "liquidity_level": price, "liquidity_tier": "NONE", "sweep_extreme": price,
-            "location_ok": False, "event": "NONE", "acceptance": False,
-            "rejection": False, "reaction": "WEAK",
+        if side == "BUY":
+            liq_level = prior_low
+            liq_near = abs(price - prior_low) <= SIMPLE_ZONE_ATR * atr15
+            whale_price = float(whales.get("bid_price") or 0)
+            whale_near = whale_price > 0 and whale_price <= price and abs(price - whale_price) <= SIMPLE_WHALE_NEAR_ATR * atr15
+            reaction = _rejection_candle(last, side) or (_spinning_top(prev) and last["close"] > prev["high"])
+            momentum = last["close"] > last["open"] and last["close"] >= prev["close"]
+            rsi_support = rctx["rsi_now"] <= 45 or rctx["rsi_turn"] > 0
+            extreme = min(last["low"], prev["low"], prior_low, ob_zone[0] if ob_zone else price)
+            target_liq = whales.get("ask_price") or prior_high
+        else:
+            liq_level = prior_high
+            liq_near = abs(price - prior_high) <= SIMPLE_ZONE_ATR * atr15
+            whale_price = float(whales.get("ask_price") or 0)
+            whale_near = whale_price > 0 and whale_price >= price and abs(whale_price - price) <= SIMPLE_WHALE_NEAR_ATR * atr15
+            reaction = _rejection_candle(last, side) or (_spinning_top(prev) and last["close"] < prev["low"])
+            momentum = last["close"] < last["open"] and last["close"] <= prev["close"]
+            rsi_support = rctx["rsi_now"] >= 55 or rctx["rsi_turn"] < 0
+            extreme = max(last["high"], prev["high"], prior_high, ob_zone[1] if ob_zone else price)
+            target_liq = whales.get("bid_price") or prior_low
+
+        location = bool(ob_near or liq_near or whale_near)
+        volume_ok = vr >= SIMPLE_MIN_VOL_RATIO
+        factors = {
+            "LOCATION": location,
+            "ORDER_BLOCK": ob_near,
+            "WHALE_WALL": whale_near,
+            "REACTION": reaction,
+            "MOMENTUM": momentum,
+            "RSI_SUPPORT": rsi_support,
+            "VOLUME": volume_ok,
         }
+        confluence = sum(1 for v in factors.values() if v)
+        # At minimum require location + reaction/momentum and total confluence.
+        valid = location and (reaction or momentum) and volume_ok and confluence >= SIMPLE_MIN_CONFLUENCE
+        choices.append((confluence, valid, side, factors, ob_zone, ob_level, liq_level, whale_price, extreme, target_liq))
 
-    # --------------------------------------------------------
-    # 1) TREND PULLBACK — primary setup, only in established trend regime.
-    # Context -> correct location -> retest hold -> displacement.
-    # --------------------------------------------------------
-    if (
-        bias in ("BUY", "SELL")
-        and ((bias == "BUY" and regime_name == "BULL_TREND")
-             or (bias == "SELL" and regime_name == "BEAR_TREND"))
-    ):
-        side = bias
-        one_h_level = st.get("last_swing_low") if side == "BUY" else st.get("last_swing_high")
-        levels = [x for x in (e20, one_h_level) if isinstance(x, (int, float)) and x > 0]
-        level = min(levels, key=lambda x: abs(price - x)) if levels else e20
-
-        if side == "BUY":
-            touched = min(last["low"], prev["low"]) <= level + LOCATION_ATR_DISTANCE * atr15
-            held = last["close"] > level
-            extension = max(0.0, price - e20) / atr15 if atr15 > 0 else 99.0
-            ema_ok = e20 > e50 and price > e20
-            extreme = min(last["low"], prev["low"], level)
-        else:
-            touched = max(last["high"], prev["high"]) >= level - LOCATION_ATR_DISTANCE * atr15
-            held = last["close"] < level
-            extension = max(0.0, e20 - price) / atr15 if atr15 > 0 else 99.0
-            ema_ok = e20 < e50 and price < e20
-            extreme = max(last["high"], prev["high"], level)
-
-        location_ok = touched and held and extension <= MAX_EXTENSION_ATR
-        reaction = _directional_displacement(last, atr15, side)
-        if location_ok and ema_ok and reaction and vr >= TREND_MIN_VOL_RATIO:
-            return {
-                **base, "valid": True, "side": side, "strategy_type": "TREND",
-                "setup": "15M_TREND_PULLBACK_RESUME", "reason": "LOCATION_RETEST_DISPLACEMENT",
-                "liquidity_level": level, "liquidity_tier": "B", "sweep_extreme": extreme,
-                "location_ok": True, "event": "RETEST", "acceptance": False,
-                "rejection": False, "reaction": "DISPLACEMENT",
-            }
-
-    # --------------------------------------------------------
-    # 2) BREAKOUT — secondary setup for range/expansion or clear HTF alignment.
-    # Level break -> acceptance/retest -> directional displacement.
-    # --------------------------------------------------------
-    breakout_candidates = []
-    for side, level in (("BUY", prior_high), ("SELL", prior_low)):
-        buffer = BREAKOUT_BUFFER_ATR * atr15
-        if side == "BUY":
-            prev_broke = prev["close"] > level + buffer
-            prev2_broke = prev2["close"] > level + buffer
-            last_beyond = last["close"] > level + buffer
-            accepted = last_beyond and (prev_broke or prev2_broke)
-            retest = prev_broke and last["low"] <= level + RETEST_MAX_ATR * atr15 and last["close"] > level
-            extreme = min(last["low"], prev["low"], level)
-            same_expansion = regime_name == "EXPANSION_BULL"
-        else:
-            prev_broke = prev["close"] < level - buffer
-            prev2_broke = prev2["close"] < level - buffer
-            last_beyond = last["close"] < level - buffer
-            accepted = last_beyond and (prev_broke or prev2_broke)
-            retest = prev_broke and last["high"] >= level - RETEST_MAX_ATR * atr15 and last["close"] < level
-            extreme = max(last["high"], prev["high"], level)
-            same_expansion = regime_name == "EXPANSION_BEAR"
-
-        reaction = _directional_displacement(last, atr15, side)
-        context_ok = (
-            regime_name == "RANGE"
-            or same_expansion
-            or side == bias
-        )
-        if context_ok and vr >= BREAKOUT_MIN_VOL_RATIO and reaction and (accepted or retest):
-            breakout_candidates.append({
-                **base, "valid": True, "side": side, "strategy_type": "BREAKOUT",
-                "setup": "15M_BREAKOUT_ACCEPT" if accepted else "15M_BREAKOUT_RETEST",
-                "reason": "BREAK_ACCEPTANCE_DISPLACEMENT" if accepted else "BREAK_RETEST_DISPLACEMENT",
-                "liquidity_level": level, "liquidity_tier": "A", "sweep_extreme": extreme,
-                "location_ok": True, "event": "BREAKOUT", "acceptance": bool(accepted),
-                "rejection": False, "reaction": "DISPLACEMENT",
-            })
-    if breakout_candidates:
-        breakout_candidates.sort(key=lambda x: (x["side"] == bias, x["acceptance"]), reverse=True)
-        return breakout_candidates[0]
-
-    # --------------------------------------------------------
-    # 3) REVERSAL — advanced setup. Never RSI-only and never blind countertrend.
-    # Tier-A sweep -> reclaim/reject -> displacement; context must permit reversal.
-    # --------------------------------------------------------
-    for side, level in (("BUY", prior_low), ("SELL", prior_high)):
-        swept_last, _ = _sweep_reclaim(last, level, atr15, side)
-        swept_prev, _ = _sweep_reclaim(prev, level, atr15, side)
-        swept = swept_last or swept_prev
-        reaction = _directional_displacement(last, atr15, side)
-        location_ok = (
-            abs((last["low"] if side == "BUY" else last["high"]) - level)
-            <= (SWEEP_MAX_ATR + RETEST_MAX_ATR) * atr15
-        )
-        # Range is ideal. In a trend, only allow reversal if 1H structure already agrees.
-        reversal_context_ok = (
-            regime_name == "RANGE"
-            or st.get("bias") == side
-            or (side == "BUY" and regime_name == "EXPANSION_BULL")
-            or (side == "SELL" and regime_name == "EXPANSION_BEAR")
-        )
-        if swept and reaction and location_ok and reversal_context_ok and vr >= REVERSAL_MIN_VOL_RATIO:
-            return {
-                **base, "valid": True, "side": side, "strategy_type": "REVERSAL",
-                "setup": "15M_LOW_SWEEP_RECLAIM" if side == "BUY" else "15M_HIGH_SWEEP_REJECT",
-                "reason": "LIQUIDITY_REJECTION_DISPLACEMENT",
-                "liquidity_level": level, "liquidity_tier": "A",
-                "sweep_extreme": min(last["low"], prev["low"]) if side == "BUY" else max(last["high"], prev["high"]),
-                "location_ok": True, "event": "SWEEP", "acceptance": False,
-                "rejection": True, "reaction": "DISPLACEMENT",
-            }
+    choices.sort(key=lambda x: (x[1], x[0]), reverse=True)
+    confluence, valid, side, factors, ob_zone, ob_level, liq_level, whale_price, extreme, target_liq = choices[0]
 
     return {
-        **base, "valid": False, "side": None, "strategy_type": "NONE", "setup": "NONE",
-        "reason": "NO_COMPLETE_LOGIC_CHAIN", "liquidity_level": price,
-        "liquidity_tier": "NONE", "sweep_extreme": price, "location_ok": False,
-        "event": "NONE", "acceptance": False, "rejection": False, "reaction": "WEAK",
+        "valid": bool(valid),
+        "side": side if valid else None,
+        "strategy_type": "SIMPLE_LIQUIDITY",
+        "setup": "WHALE_OB_SPINNING_REACTION" if valid else "FORMING",
+        "reason": "SIMPLE_CONFLUENCE" if valid else "SIMPLE_WAIT",
+        "price": price, "prior_high": prior_high, "prior_low": prior_low,
+        "atr": atr15, "atr_pct": atr_pct, "vol_ratio": vr,
+        "volatility_ok": atr15 > 0, "bias": side,
+        "rsi_15m": rctx["rsi_now"], "rsi_context": rctx,
+        "liquidity_level": liq_level, "liquidity_tier": "A",
+        "sweep_extreme": extreme, "location_ok": bool(factors["LOCATION"]),
+        "event": "WHALE/OB", "acceptance": bool(factors["MOMENTUM"]),
+        "rejection": bool(factors["REACTION"]),
+        "reaction": "CONFIRMED" if (factors["REACTION"] or factors["MOMENTUM"]) else "WEAK",
+        "confluence": confluence, "factors": factors,
+        "order_block_zone": ob_zone, "order_block_level": ob_level,
+        "whale_level": whale_price, "target_liquidity": target_liq,
     }
 
 # ============================================================
 # V4 DEEP SCAN — COMPLETE HARD-GATE DECISION CHAIN
 # ============================================================
 
+def _simple_risk(entry, side, setup):
+    atr15 = float(setup.get("atr") or 0)
+    if entry <= 0 or atr15 <= 0:
+        return None
+    extreme = float(setup.get("sweep_extreme") or entry)
+    buffer = 0.15 * atr15
+    if side == "BUY":
+        sl = min(extreme - buffer, entry - 0.45 * atr15)
+        dist = entry - sl
+    else:
+        sl = max(extreme + buffer, entry + 0.45 * atr15)
+        dist = sl - entry
+    risk_pct = dist / entry if entry else 0
+    # Keep paper-risk practical, but do not reject ordinary crypto volatility too aggressively.
+    if risk_pct <= 0 or risk_pct > 0.012:
+        dist = min(max(0.004 * entry, 0.70 * atr15), 0.012 * entry)
+        risk_pct = dist / entry
+        sl = entry - dist if side == "BUY" else entry + dist
+    target = float(setup.get("target_liquidity") or 0)
+    rr_target = max(SIMPLE_MIN_RR, RR_TARGET)
+    if side == "BUY":
+        tp_rr = entry + dist * rr_target
+        tp = target if target > entry + dist * SIMPLE_MIN_RR else tp_rr
+        tp = min(tp, entry + dist * 3.0) if tp > entry else tp_rr
+    else:
+        tp_rr = entry - dist * rr_target
+        tp = target if 0 < target < entry - dist * SIMPLE_MIN_RR else tp_rr
+        tp = max(tp, entry - dist * 3.0) if 0 < tp < entry else tp_rr
+    rr = abs(tp - entry) / dist if dist > 0 else rr_target
+    return {"risk_pct": risk_pct, "risk_dist": dist, "sl": sl, "tp": tp, "rr": rr, "structural_level": extreme}
+
+
 def _deep_scan_one(item):
     _, symbol, lm, btc_regime = item
-
     try:
         reg = regime_4h(symbol)
         st = structure_1h(symbol)
         setup = multi_strategy_setup_15m(symbol, reg, st)
-
-        if reg.get("regime") == "CHOP":
-            return {
-                "symbol": symbol, "blocked": "CHOP_REGIME", "score": 0,
-                "lm": lm, "regime": reg, "structure": st, "setup": setup,
-                "error": None,
-            }
-
         if not setup.get("valid"):
-            return {
-                "symbol": symbol,
-                "blocked": setup.get("reason") or "NO_V4_SETUP",
-                "score": 0,
-                "lm": lm,
-                "regime": reg,
-                "structure": st,
-                "setup": setup,
-                "error": None,
-            }
+            return {"symbol": symbol, "blocked": setup.get("reason") or "SIMPLE_WAIT", "score": 0,
+                    "lm": lm, "regime": reg, "structure": st, "setup": setup, "error": None}
 
         side = setup["side"]
-        strategy_type = setup.get("strategy_type", "V4")
-
-        # Hard gate: optional BTC context cannot directly oppose the trade.
-        if not btc_market_allows(side, btc_regime):
-            return {
-                "symbol": symbol, "side": side, "blocked": "BTC_REGIME",
-                "score": 0, "lm": lm, "regime": reg, "structure": st,
-                "setup": setup, "error": None,
-            }
-
-        # Hard gate: 5m must confirm a real local structure break with displacement.
-        trigger = entry_trigger_5m(symbol, side)
-        if not trigger.get("valid"):
-            q = quality_score(side, reg, st, setup, trigger, 0.0, 0.0, 999.0, 0.0)
-            return {
-                "symbol": symbol, "side": side, "blocked": "5M_STRUCTURE_WAIT",
-                "score": q, "lm": lm, "regime": reg, "structure": st,
-                "setup": setup, "trigger": trigger, "error": None,
-            }
-
-        # Hard gate: tradable spread + directional live confirmation.
         dm = depth_metrics(symbol)
         if not dm:
-            return {
-                "symbol": symbol, "side": side, "blocked": "NO_ORDER_BOOK",
-                "score": 0, "lm": lm, "regime": reg, "structure": st,
-                "setup": setup, "trigger": trigger, "error": None,
-            }
-
+            return {"symbol": symbol, "side": side, "blocked": "NO_ORDER_BOOK", "score": 0,
+                    "lm": lm, "regime": reg, "structure": st, "setup": setup, "error": None}
         spread, book = dm
+        if spread > SIMPLE_MAX_SPREAD_BPS:
+            return {"symbol": symbol, "side": side, "blocked": "SPREAD", "score": 0,
+                    "lm": lm, "regime": reg, "structure": st, "setup": setup, "spread": spread, "error": None}
+
         delta, buy, sell = flow_metrics(symbol)
         oi = oi_change_pct(symbol)
-        live_ok, live_reasons = live_confirmation(side, delta, book, spread, oi)
-
-        q = quality_score(side, reg, st, setup, trigger, delta, book, spread, oi)
         price = current_price(symbol)
-        risk = dynamic_risk(price, side, setup, trigger)
+        risk = _simple_risk(price, side, setup)
+        if not risk:
+            return {"symbol": symbol, "side": side, "blocked": "RISK", "score": 0,
+                    "lm": lm, "regime": reg, "structure": st, "setup": setup, "error": None}
 
-        if risk is None:
-            return {
-                "symbol": symbol, "side": side, "blocked": "RISK_TOO_WIDE",
-                "score": q, "lm": lm, "regime": reg, "structure": st,
-                "setup": setup, "trigger": trigger, "delta": delta,
-                "book": book, "spread": spread, "oi": oi, "error": None,
-            }
+        # Live flow/book are supportive: reject only when BOTH strongly oppose the setup.
+        if side == "BUY":
+            strongly_opposed = delta <= -0.25 and book <= -0.25
+        else:
+            strongly_opposed = delta >= 0.25 and book >= 0.25
+        hard_confirm = not strongly_opposed
 
-        score_ok = q >= MIN_READY_SCORE
-        hard_confirm = bool(live_ok and score_ok)
-        blocked_reasons = list(live_reasons)
-        if not score_ok:
-            blocked_reasons.append("SCORE")
-
+        base_score = 45 + int(setup.get("confluence", 0)) * 7
+        if side == "BUY" and (delta > 0 or book > 0): base_score += 5
+        if side == "SELL" and (delta < 0 or book < 0): base_score += 5
+        if spread <= 1.0: base_score += 4
+        q = min(100, max(0, base_score))
         rctx = setup.get("rsi_context") or {}
+        trigger = {"valid": True, "trigger": "15M_SIMPLE_CONFIRM", "invalidation": setup.get("sweep_extreme")}
+
         candidate = {
-            "time_utc": datetime.now(timezone.utc).isoformat(),
-            "strategy_version": STRATEGY_VERSION,
-            "exchange": "BITGET",
-            "data_source": "Bitget USDT-M Futures",
-            "symbol": symbol,
-            "signal": side,
-            "score": q,
-            "risk_label": risk_label(q),
-            "price": price,
-            "strategy_type": strategy_type,
-
-            "regime_4h": reg["regime"],
-            "structure_1h": st["structure"],
-            "bias_1h": setup.get("bias", st.get("bias", "NEUTRAL")),
-            "setup_15m": f"{strategy_type}:{setup['setup']}",
-            "location_15m": "VALID" if setup.get("location_ok") else "INVALID",
-            "liquidity_event_15m": setup.get("event", "NONE"),
-            "liquidity_tier": setup.get("liquidity_tier", "NONE"),
-            "acceptance_15m": bool(setup.get("acceptance")),
-            "rejection_15m": bool(setup.get("rejection")),
-            "reaction_15m": setup.get("reaction", "WEAK"),
-            "trigger_5m": trigger["trigger"],
-
+            "time_utc": datetime.now(timezone.utc).isoformat(), "strategy_version": STRATEGY_VERSION,
+            "exchange": "BITGET", "data_source": "Bitget USDT-M Futures",
+            "symbol": symbol, "signal": side, "score": q, "risk_label": risk_label(q),
+            "price": price, "strategy_type": "SIMPLE_LIQUIDITY",
+            "regime_4h": reg.get("regime"), "structure_1h": st.get("structure"),
+            "bias_1h": side, "setup_15m": "SIMPLE_LIQUIDITY:WHALE_OB_SPINNING_REACTION",
+            "location_15m": "VALID", "liquidity_event_15m": "WHALE/OB", "liquidity_tier": "A",
+            "acceptance_15m": bool(setup.get("acceptance")), "rejection_15m": bool(setup.get("rejection")),
+            "reaction_15m": setup.get("reaction"), "trigger_5m": "NOT REQUIRED",
             "rsi_15m": round(float(setup.get("rsi_15m") or 0), 2),
             "rsi_prev_15m": round(float(rctx.get("rsi_prev") or 0), 2),
             "rsi_turn_15m": round(float(rctx.get("rsi_turn") or 0), 2),
+            "rsi_oversold": bool(rctx.get("oversold")), "rsi_overbought": bool(rctx.get("overbought")),
+            "rsi_extreme_oversold": bool(rctx.get("extreme_oversold")),
+            "rsi_extreme_overbought": bool(rctx.get("extreme_overbought")),
             "reversal_strength": "SUPPORTIVE_ONLY",
-
-            "flow_delta": delta,
-            "buy_usd_60s": buy,
-            "sell_usd_60s": sell,
-            "spread_bps": spread,
-            "book_imb": book,
-            "oi_change_pct": oi,
-            "atr_15m_pct": setup["atr_pct"],
-            "vol_ratio": setup["vol_ratio"],
-            "risk_pct": risk["risk_pct"],
-            "rr": risk["rr"],
-            "tp": risk["tp"],
-            "sl": risk["sl"],
-            "structural_level": risk.get("structural_level"),
-            "hard_confirm": hard_confirm,
-            "blocked_reasons": blocked_reasons,
+            "flow_delta": delta, "buy_usd_60s": buy, "sell_usd_60s": sell,
+            "spread_bps": spread, "book_imb": book, "oi_change_pct": oi,
+            "atr_15m_pct": setup.get("atr_pct", 0), "vol_ratio": setup.get("vol_ratio", 0),
+            "risk_pct": risk["risk_pct"], "rr": risk["rr"], "tp": risk["tp"], "sl": risk["sl"],
+            "structural_level": risk.get("structural_level"), "hard_confirm": hard_confirm,
+            "blocked_reasons": ["FLOW_BOOK_OPPOSITION"] if strongly_opposed else [],
             "status": "TRADE READY" if hard_confirm else "WAIT LIVE CONFIRMATION",
+            "confluence": setup.get("confluence"), "formula_factors": setup.get("factors"),
+            "whale_level": setup.get("whale_level"), "order_block_zone": setup.get("order_block_zone"),
+            "target_liquidity": setup.get("target_liquidity"),
         }
-
-        return {
-            "symbol": symbol, "side": side, "score": q, "candidate": candidate,
-            "blocked": None if hard_confirm else "LIVE_CONFIRM",
-            "lm": lm, "regime": reg, "structure": st, "setup": setup,
-            "trigger": trigger, "delta": delta, "buy": buy, "sell": sell,
-            "spread": spread, "book": book, "oi": oi, "error": None,
-        }
-
+        return {"symbol": symbol, "side": side, "score": q, "candidate": candidate,
+                "blocked": None if hard_confirm else "LIVE_CONFIRM", "lm": lm, "regime": reg,
+                "structure": st, "setup": setup, "trigger": trigger, "delta": delta, "buy": buy,
+                "sell": sell, "spread": spread, "book": book, "oi": oi, "error": None}
     except Exception as e:
         return {"symbol": symbol, "error": str(e)}
 
@@ -2402,13 +2396,13 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V4 REFINED LOGIC BITGET FUTURES SCAN START")
+    scan_log("RAZA V5 SIMPLE LIQUIDITY SCAN START")
 
     with state_lock:
         state["status"] = (
-            "V4 24/7 scanning ALL Bitget USDT-M Futures..."
+            "V5 24/7 scanning ALL Bitget USDT-M Futures..."
             if SCAN_ALL_COINS
-            else f"V4 24/7 scanning Top {TOP_COINS} Bitget Futures..."
+            else f"V5 24/7 scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -2570,10 +2564,11 @@ def scan_once():
     # DEEP SCAN
     # ----------------------------
 
-    # In ALL-COINS mode, every LIGHT-SCAN candidate receives the full V4 deep scan.
-    # Worker count remains bounded by DEEP_SCAN_WORKERS to avoid an unbounded burst.
+    # Keep broad market coverage: ALL eligible symbols still receive the light scan.
+    # The expensive V4 deep scan is limited to the strongest ranked candidates so
+    # a scan cycle can finish quickly enough to act on fresh setups.
     selected_for_deep = (
-        light_candidates
+        light_candidates[:max(1, DEEP_SCAN_LIMIT)]
         if SCAN_ALL_COINS
         else light_candidates[:max(1, DEEP_CHECK)]
     )
@@ -2585,7 +2580,8 @@ def scan_once():
     ]
 
     scan_log(
-        f"V4 DEEP SCAN START: {len(deep_items)} candidates"
+        f"V4 DEEP SCAN START: {len(deep_items)} candidates "
+        f"(top-ranked from {len(light_candidates)} light-scan candidates)"
     )
 
     alerts = 0
@@ -2654,7 +2650,7 @@ def scan_once():
                 p = performance()
 
                 telegram_async(
-                    f"🚨 RAZA SHAH SIGNAL V4 — TRADE READY\n\n"
+                    f"🚨 RAZA SHAH SIGNAL V5 — TRADE READY\n\n"
                     f"Exchange: BITGET FUTURES\n"
                     f"Coin: {c['symbol']}\n"
                     f"Side: "
@@ -2695,12 +2691,12 @@ def scan_once():
 
         if alerts:
             state["status"] = (
-                f"V4: {alerts} auto paper trade(s) added"
+                f"V5: {alerts} auto paper trade(s) added"
             )
 
         elif best:
             state["status"] = (
-                f"V4 best: {best['symbol']} "
+                f"V5 best: {best['symbol']} "
                 f"{'LONG' if best['signal']=='BUY' else 'SHORT'} "
                 f"{best['score']}/100 — {best['status']}"
             )
@@ -2716,7 +2712,7 @@ def scan_once():
             )
 
             state["status"] = (
-                f"V4 scanning — main block: {top_block}"
+                f"V5 scanning — main block: {top_block}"
             )
 
         if (
@@ -2796,7 +2792,7 @@ def ensure_otp_for_ip(ip):
         }
 
     telegram_async(
-        f"🔐 RAZA SHAH SIGNAL V4\n"
+        f"🔐 RAZA SHAH SIGNAL V5\n"
         f"ACCESS REQUEST\n\n"
         f"Permission Code: {code}\n"
         f"IP: {ip}\n"
@@ -2942,7 +2938,7 @@ def telegram_hourly_status_loop():
                 best_line = "Best: none"
 
             telegram_async(
-                f"🟢 RAZA SHAH SIGNAL V4\n"
+                f"🟢 RAZA SHAH SIGNAL V5\n"
                 f"1 HOUR STATUS\n\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
@@ -2994,13 +2990,13 @@ def scanner_loop():
     p = performance()
 
     telegram_async(
-        f"🟢 RAZA SHAH SIGNAL V4\n"
+        f"🟢 RAZA SHAH SIGNAL V5\n"
         f"LIVE PAPER TEST ACTIVE\n\n"
         f"Logic: Time → 4H Regime → 1H Bias → 15M Location/Liquidity → "
         f"Displacement → 5M Structure → Flow/Book/OI → Risk\n"
         f"Exchange: BITGET FUTURES\n"
         f"Coin Universe: {'ALL eligible USDT-M futures' if SCAN_ALL_COINS else f'Top {TOP_COINS}'}\n"
-        f"Deep Scan: {'ALL light-scan candidates' if SCAN_ALL_COINS else DEEP_CHECK}\n"
+        f"Deep Scan: {DEEP_SCAN_LIMIT if SCAN_ALL_COINS else DEEP_CHECK} strongest light-scan candidates\n"
         f"Scan interval: {SCAN_INTERVAL//60} minutes\n"
         f"KSA Session: "
         f"{KSA_SESSION_START}:00-{KSA_SESSION_END}:00 "
@@ -3102,15 +3098,15 @@ def api_status():
     x["performance"] = performance()
     x["forming_performance"] = forming_performance()
     x["score_performance"] = score_performance()
-    x["forming_history"] = []
+    x["forming_history"] = forming_history()
+    x["trade_history"] = recent_trade_history(20)
     x["capital_summary"] = capital_summary()
 
     x["dashboard"] = {
         "strategy_version": STRATEGY_VERSION,
         "logic": (
-            "Time → 4H regime → 1H bias/structure → 15m location/liquidity → "
-            "accept/reject + displacement → 5m structure confirmation → "
-            "live flow/book/OI → structural ATR risk"
+            "15m liquidity/whale wall → order-block/prior-liquidity location → "
+            "spinning-top/rejection or directional reaction → supportive flow/book → ATR risk"
         ),
         "risk_rules": {
             "score_role": "QUALITY ONLY",
@@ -3145,7 +3141,8 @@ def api_signal():
     x["performance"] = performance()
     x["forming_performance"] = forming_performance()
     x["score_performance"] = score_performance()
-    x["forming_history"] = []
+    x["forming_history"] = forming_history()
+    x["trade_history"] = recent_trade_history(20)
     x["capital_summary"] = capital_summary()
 
     return jsonify(x)
@@ -3259,6 +3256,16 @@ def api_live_market(symbol):
             "rsi_15m": round(rsi15, 2),
             "rsi_1h": round(rsi1h, 2),
             "rsi_4h": round(rsi4h, 2),
+            "rsi_15m_oversold": bool(rsi15 <= RSI_OVERSOLD),
+            "rsi_15m_overbought": bool(rsi15 >= RSI_OVERBOUGHT),
+            "rsi_15m_extreme_oversold": bool(rsi15 <= RSI_EXTREME_OVERSOLD),
+            "rsi_15m_extreme_overbought": bool(rsi15 >= RSI_EXTREME_OVERBOUGHT),
+            "rsi_state_15m": (
+                "EXTREME_OVERSOLD" if rsi15 <= RSI_EXTREME_OVERSOLD else
+                "OVERSOLD" if rsi15 <= RSI_OVERSOLD else
+                "EXTREME_OVERBOUGHT" if rsi15 >= RSI_EXTREME_OVERBOUGHT else
+                "OVERBOUGHT" if rsi15 >= RSI_OVERBOUGHT else "NEUTRAL"
+            ),
 
             "bids": bids,
             "asks": asks,
