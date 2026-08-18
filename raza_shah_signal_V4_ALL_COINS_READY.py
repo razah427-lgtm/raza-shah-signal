@@ -50,7 +50,7 @@ from flask import (
 # Risk decides whether we are allowed to participate.
 # ============================================================
 
-STRATEGY_VERSION = "V5_SIMPLE_LIQUIDITY"
+STRATEGY_VERSION = "V6_SIMPLE_LIQUIDITY_RISK1"
 
 BITGET_BASE = "https://api.bitget.com"
 BITGET_PRODUCT_TYPE = "usdt-futures"
@@ -69,13 +69,17 @@ DEEP_CHECK = int(os.getenv("DEEP_CHECK", "20"))
 # the strongest ranked candidates receive the expensive multi-timeframe deep scan.
 DEEP_SCAN_LIMIT = int(os.getenv("DEEP_SCAN_LIMIT", "50"))
 
-# V5 SIMPLE LIQUIDITY FORMULA
+# V6 SIMPLE LIQUIDITY + 1% ACCOUNT RISK
 SIMPLE_MIN_CONFLUENCE = int(os.getenv("SIMPLE_MIN_CONFLUENCE", "3"))
 SIMPLE_ZONE_ATR = float(os.getenv("SIMPLE_ZONE_ATR", "0.85"))
 SIMPLE_WHALE_NEAR_ATR = float(os.getenv("SIMPLE_WHALE_NEAR_ATR", "1.25"))
 SIMPLE_MIN_VOL_RATIO = float(os.getenv("SIMPLE_MIN_VOL_RATIO", "0.70"))
 SIMPLE_MAX_SPREAD_BPS = float(os.getenv("SIMPLE_MAX_SPREAD_BPS", "4.0"))
 SIMPLE_MIN_RR = float(os.getenv("SIMPLE_MIN_RR", "1.50"))
+# Tight stop envelope for NEW simple-liquidity trades only.
+# TP logic remains unchanged; only the SL distance is clamped.
+SIMPLE_MIN_SL_PCT = float(os.getenv("SIMPLE_MIN_SL_PCT", "0.0025"))  # 0.25%
+SIMPLE_MAX_SL_PCT = float(os.getenv("SIMPLE_MAX_SL_PCT", "0.0050"))  # 0.50%
 WATCHLIST_LIMIT = int(os.getenv("WATCHLIST_LIMIT", "20"))
 
 LIGHT_SCAN_WORKERS = int(os.getenv("LIGHT_SCAN_WORKERS", "8"))
@@ -177,6 +181,12 @@ MIN_READY_SCORE = int(os.getenv("MIN_READY_SCORE", "70"))
 # Paper tester
 TEST_START_CAPITAL = float(os.getenv("TEST_START_CAPITAL", "100"))
 TEST_LEVERAGE = float(os.getenv("TEST_LEVERAGE", "20"))
+
+# Account-level paper risk management.
+# 1% risk means a normal SL hit should cost about 1% of current equity,
+# subject to leverage/margin caps and price slippage.
+ACCOUNT_RISK_PCT = float(os.getenv("ACCOUNT_RISK_PCT", "0.01"))
+MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES", "3"))
 
 # ============================================================
 # TELEGRAM / WEB
@@ -310,6 +320,12 @@ def init_db():
                     ALTER TABLE trade_results
                     ADD COLUMN IF NOT EXISTS strategy_version TEXT
                 """)
+
+                # V6 risk-managed paper-trade fields. Safe migration for the existing DB.
+                cur.execute("""ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS account_risk_pct DOUBLE PRECISION""")
+                cur.execute("""ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS risk_amount DOUBLE PRECISION""")
+                cur.execute("""ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS position_notional DOUBLE PRECISION""")
+                cur.execute("""ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS realized_pnl DOUBLE PRECISION""")
 
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS forming_results (
@@ -1484,40 +1500,21 @@ def trade_rows(v2_only=True):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                fields = """
+                    trade_id, time_utc, closed_time_utc, symbol, signal, score,
+                    entry, tp, sl, status, exit_price, strategy_version,
+                    account_risk_pct, risk_amount, position_notional, realized_pnl
+                """
                 if v2_only:
-                    cur.execute("""
-                        SELECT
-                            trade_id,
-                            time_utc,
-                            closed_time_utc,
-                            symbol,
-                            signal,
-                            score,
-                            entry,
-                            tp,
-                            sl,
-                            status,
-                            exit_price,
-                            strategy_version
+                    cur.execute(f"""
+                        SELECT {fields}
                         FROM trade_results
                         WHERE strategy_version = %s
                         ORDER BY time_utc ASC
                     """, (STRATEGY_VERSION,))
                 else:
-                    cur.execute("""
-                        SELECT
-                            trade_id,
-                            time_utc,
-                            closed_time_utc,
-                            symbol,
-                            signal,
-                            score,
-                            entry,
-                            tp,
-                            sl,
-                            status,
-                            exit_price,
-                            strategy_version
+                    cur.execute(f"""
+                        SELECT {fields}
                         FROM trade_results
                         ORDER BY time_utc ASC
                     """)
@@ -1539,22 +1536,13 @@ def write_trade_rows(rows):
                 for r in rows:
                     cur.execute("""
                         INSERT INTO trade_results (
-                            trade_id,
-                            time_utc,
-                            closed_time_utc,
-                            symbol,
-                            signal,
-                            score,
-                            entry,
-                            tp,
-                            sl,
-                            status,
-                            exit_price,
-                            strategy_version
+                            trade_id, time_utc, closed_time_utc, symbol, signal, score,
+                            entry, tp, sl, status, exit_price, strategy_version,
+                            account_risk_pct, risk_amount, position_notional, realized_pnl
                         )
                         VALUES (
-                            %s,%s,%s,%s,%s,%s,
-                            %s,%s,%s,%s,%s,%s
+                            %s,%s,%s,%s,%s,%s,%s,%s,
+                            %s,%s,%s,%s,%s,%s,%s,%s
                         )
                         ON CONFLICT (trade_id)
                         DO UPDATE SET
@@ -1565,7 +1553,11 @@ def write_trade_rows(rows):
                             sl = EXCLUDED.sl,
                             status = EXCLUDED.status,
                             exit_price = EXCLUDED.exit_price,
-                            strategy_version = EXCLUDED.strategy_version
+                            strategy_version = EXCLUDED.strategy_version,
+                            account_risk_pct = EXCLUDED.account_risk_pct,
+                            risk_amount = EXCLUDED.risk_amount,
+                            position_notional = EXCLUDED.position_notional,
+                            realized_pnl = EXCLUDED.realized_pnl
                     """, (
                         r.get("trade_id"),
                         r.get("time_utc"),
@@ -1577,12 +1569,12 @@ def write_trade_rows(rows):
                         float(r.get("tp") or 0),
                         float(r.get("sl") or 0),
                         r.get("status") or "OPEN",
-                        (
-                            float(r.get("exit_price"))
-                            if r.get("exit_price") not in ("", None)
-                            else None
-                        ),
+                        float(r.get("exit_price")) if r.get("exit_price") not in ("", None) else None,
                         r.get("strategy_version") or STRATEGY_VERSION,
+                        float(r.get("account_risk_pct") or 0),
+                        float(r.get("risk_amount") or 0),
+                        float(r.get("position_notional") or 0),
+                        float(r.get("realized_pnl")) if r.get("realized_pnl") not in ("", None) else None,
                     ))
 
             conn.commit()
@@ -1591,14 +1583,85 @@ def write_trade_rows(rows):
         print(f"[DB] TRADE WRITE ERROR: {e}", flush=True)
 
 
-def add_open_trade(row):
-    trade_id = (
-        f'{STRATEGY_VERSION}-'
-        f'{row["symbol"]}-'
-        f'{int(time.time()*1000)}'
-    )
+def _raw_trade_return(r):
+    try:
+        entry = float(r.get("entry") or 0)
+        exit_price = float(r.get("exit_price") or 0)
+        side = str(r.get("signal") or "").upper()
+        if entry <= 0 or exit_price <= 0:
+            return 0.0
+        return (
+            (exit_price - entry) / entry
+            if side == "BUY"
+            else (entry - exit_price) / entry
+        )
+    except Exception:
+        return 0.0
 
+
+def _trade_pnl(r):
+    """Risk-managed P/L. Leverage limits notional; it does not multiply the whole account."""
+    try:
+        if r.get("realized_pnl") not in (None, ""):
+            return float(r.get("realized_pnl") or 0)
+        notional = float(r.get("position_notional") or 0)
+        if notional <= 0:
+            return 0.0
+        return notional * _raw_trade_return(r)
+    except Exception:
+        return 0.0
+
+
+def _trade_return_pct(r):
+    """Account return fraction, kept for compatibility with older dashboard helpers."""
+    if TEST_START_CAPITAL <= 0:
+        return 0.0
+    return _trade_pnl(r) / TEST_START_CAPITAL
+
+
+def _current_equity(rows=None):
+    rows = trade_rows(v2_only=True) if rows is None else rows
+    realized = sum(_trade_pnl(r) for r in rows if r.get("status") in ("WIN", "LOSS"))
+    return max(0.0, TEST_START_CAPITAL + realized)
+
+
+def add_open_trade(row):
+    """Create a paper trade sized so an SL costs about ACCOUNT_RISK_PCT of current equity."""
     rows = trade_rows(v2_only=True)
+    open_rows = [r for r in rows if r.get("status") == "OPEN"]
+
+    if len(open_rows) >= max(1, MAX_OPEN_TRADES):
+        scan_log(f"RISK BLOCK {row.get('symbol')}: MAX_OPEN_TRADES={MAX_OPEN_TRADES}")
+        return None
+
+    entry = float(row.get("price") or 0)
+    sl = float(row.get("sl") or 0)
+    if entry <= 0 or sl <= 0:
+        scan_log(f"RISK BLOCK {row.get('symbol')}: invalid entry/SL")
+        return None
+
+    stop_pct = abs(entry - sl) / entry
+    if stop_pct <= 0:
+        scan_log(f"RISK BLOCK {row.get('symbol')}: zero stop distance")
+        return None
+
+    equity = _current_equity(rows)
+    requested_risk = max(0.0, equity * max(0.0, ACCOUNT_RISK_PCT))
+
+    # Respect available paper margin across all currently open V6 trades.
+    lev = max(TEST_LEVERAGE, 1.0)
+    used_margin = sum(max(0.0, float(r.get("position_notional") or 0)) / lev for r in open_rows)
+    available_margin = max(0.0, equity - used_margin)
+    max_notional = available_margin * lev
+    desired_notional = requested_risk / stop_pct if requested_risk > 0 else 0.0
+    position_notional = min(desired_notional, max_notional)
+
+    if position_notional <= 0:
+        scan_log(f"RISK BLOCK {row.get('symbol')}: no available paper margin")
+        return None
+
+    actual_risk = position_notional * stop_pct
+    trade_id = f'{STRATEGY_VERSION}-{row["symbol"]}-{int(time.time()*1000)}'
 
     rows.append({
         "trade_id": trade_id,
@@ -1607,82 +1670,56 @@ def add_open_trade(row):
         "symbol": row["symbol"],
         "signal": row["signal"],
         "score": row["score"],
-        "entry": row["price"],
+        "entry": entry,
         "tp": row["tp"],
-        "sl": row["sl"],
+        "sl": sl,
         "status": "OPEN",
         "exit_price": "",
         "strategy_version": STRATEGY_VERSION,
+        "account_risk_pct": ACCOUNT_RISK_PCT,
+        "risk_amount": actual_risk,
+        "position_notional": position_notional,
+        "realized_pnl": None,
     })
 
     write_trade_rows(rows)
+    scan_log(
+        f"RISK OPEN {row['symbol']} {row['signal']} | equity=${equity:.2f} "
+        f"risk=${actual_risk:.2f} ({(actual_risk/equity*100 if equity else 0):.2f}%) "
+        f"notional=${position_notional:.2f} stop={stop_pct*100:.3f}%"
+    )
     return trade_id
-
-# ============================================================
-# PERFORMANCE / CAPITAL — CURRENT STRATEGY ONLY
-# ============================================================
-
-def _trade_return_pct(r):
-    try:
-        entry = float(r.get("entry") or 0)
-        exit_price = float(r.get("exit_price") or 0)
-        side = str(r.get("signal") or "").upper()
-
-        if entry <= 0 or exit_price <= 0:
-            return 0.0
-
-        raw = (
-            (exit_price - entry) / entry
-            if side == "BUY"
-            else (entry - exit_price) / entry
-        )
-
-        return raw * TEST_LEVERAGE
-
-    except Exception:
-        return 0.0
 
 
 def performance():
     rows = trade_rows(v2_only=True)
-
-    closed = [
-        r for r in rows
-        if r.get("status") in ("WIN", "LOSS")
-    ]
-
+    closed = [r for r in rows if r.get("status") in ("WIN", "LOSS")]
+    pnl_values = [_trade_pnl(r) for r in closed]
     wins = sum(1 for r in closed if r.get("status") == "WIN")
     losses = sum(1 for r in closed if r.get("status") == "LOSS")
     total = wins + losses
-
-    profit = 0.0
-    loss = 0.0
-
-    for r in closed:
-        pl = TEST_START_CAPITAL * _trade_return_pct(r)
-
-        if pl >= 0:
-            profit += pl
-        else:
-            loss += abs(pl)
+    win_pnls = [x for x in pnl_values if x > 0]
+    loss_pnls = [abs(x) for x in pnl_values if x < 0]
+    profit = sum(win_pnls)
+    loss = sum(loss_pnls)
+    net = profit - loss
 
     return {
         "strategy_version": STRATEGY_VERSION,
         "total_trades": total,
         "wins": wins,
         "losses": losses,
-        "win_rate": (
-            round((wins / total) * 100, 2)
-            if total
-            else 0.0
-        ),
-        "open_trades": sum(
-            1 for r in rows
-            if r.get("status") == "OPEN"
-        ),
+        "win_rate": round((wins / total) * 100, 2) if total else 0.0,
+        "open_trades": sum(1 for r in rows if r.get("status") == "OPEN"),
         "total_profit": round(profit, 2),
         "total_loss": round(loss, 2),
-        "net_pl": round(profit - loss, 2),
+        "net_pl": round(net, 2),
+        "profit_factor": round(profit / loss, 2) if loss > 0 else (999.0 if profit > 0 else 0.0),
+        "expectancy": round(net / total, 2) if total else 0.0,
+        "avg_win": round(profit / len(win_pnls), 2) if win_pnls else 0.0,
+        "avg_loss": round(loss / len(loss_pnls), 2) if loss_pnls else 0.0,
+        "risk_per_trade_pct": round(ACCOUNT_RISK_PCT * 100, 2),
+        "max_open_trades": MAX_OPEN_TRADES,
     }
 
 
@@ -1800,32 +1837,19 @@ def score_performance():
             else None
         ),
         "note": (
-            "V4 score is a quality/ranking metric only. "
+            "V6 score is a quality/ranking metric only. "
             "Market logic creates the trade."
         ),
     }
 
 
 def capital_summary():
-    rows = [
-        r for r in trade_rows(v2_only=True)
-        if r.get("status") in ("WIN", "LOSS")
-    ]
-
-    profit = 0.0
-    loss = 0.0
-
-    for r in rows:
-        pl = TEST_START_CAPITAL * _trade_return_pct(r)
-
-        if pl >= 0:
-            profit += pl
-        else:
-            loss += abs(pl)
-
+    rows = [r for r in trade_rows(v2_only=True) if r.get("status") in ("WIN", "LOSS")]
+    pnls = [_trade_pnl(r) for r in rows]
+    profit = sum(x for x in pnls if x > 0)
+    loss = sum(abs(x) for x in pnls if x < 0)
     net = profit - loss
-    ending = TEST_START_CAPITAL + net
-
+    ending = max(0.0, TEST_START_CAPITAL + net)
     wins = sum(1 for r in rows if r.get("status") == "WIN")
     losses = sum(1 for r in rows if r.get("status") == "LOSS")
 
@@ -1833,17 +1857,15 @@ def capital_summary():
         "strategy_version": STRATEGY_VERSION,
         "starting_capital": round(TEST_START_CAPITAL, 2),
         "leverage": TEST_LEVERAGE,
+        "risk_per_trade_pct": round(ACCOUNT_RISK_PCT * 100, 2),
+        "max_open_trades": MAX_OPEN_TRADES,
         "daily_profit": round(profit, 2),
         "daily_loss": round(loss, 2),
         "net_pl": round(net, 2),
         "ending_capital": round(ending, 2),
-        "net_pl_pct": (
-            round((net / TEST_START_CAPITAL) * 100, 2)
-            if TEST_START_CAPITAL
-            else 0.0
-        ),
+        "net_pl_pct": round((net / TEST_START_CAPITAL) * 100, 2) if TEST_START_CAPITAL else 0.0,
         "closed_trades_today": len(rows),
-        "source": "V4 VALIDATED TRADES ONLY",
+        "source": "V6 RISK-MANAGED VALIDATED TRADES ONLY",
         "closed_setups": len(rows),
         "wins": wins,
         "losses": losses,
@@ -1855,7 +1877,6 @@ def capital_summary():
 
 def check_open_trades():
     rows = trade_rows(v2_only=True)
-
     changed = False
     closed_messages = []
 
@@ -1866,11 +1887,9 @@ def check_open_trades():
         try:
             symbol = r["symbol"]
             side = r["signal"]
-
             entry = float(r["entry"])
             tp = float(r["tp"])
             sl = float(r["sl"])
-
             px = current_price(symbol)
             result = None
 
@@ -1879,7 +1898,6 @@ def check_open_trades():
                     result = "WIN"
                 elif px <= sl:
                     result = "LOSS"
-
             else:
                 if px <= tp:
                     result = "WIN"
@@ -1889,48 +1907,35 @@ def check_open_trades():
             if result:
                 r["status"] = result
                 r["exit_price"] = px
-                r["closed_time_utc"] = (
-                    datetime.now(timezone.utc).isoformat()
+                r["closed_time_utc"] = datetime.now(timezone.utc).isoformat()
+                pnl = float(r.get("position_notional") or 0) * (
+                    ((px - entry) / entry) if side == "BUY" else ((entry - px) / entry)
                 )
-
+                r["realized_pnl"] = pnl
                 changed = True
-
-                closed_messages.append(
-                    (symbol, side, result, entry, tp, sl, px)
-                )
+                closed_messages.append((symbol, side, result, entry, tp, sl, px, pnl, float(r.get("risk_amount") or 0)))
 
         except Exception as e:
-            scan_log(
-                f"OPEN TRADE CHECK ERROR {r.get('symbol')}: {e}"
-            )
+            scan_log(f"OPEN TRADE CHECK ERROR {r.get('symbol')}: {e}")
 
     if changed:
         write_trade_rows(rows)
-
         p = performance()
 
-        for (
-            symbol,
-            side,
-            result,
-            entry,
-            tp,
-            sl,
-            px,
-        ) in closed_messages:
-
+        for symbol, side, result, entry, tp, sl, px, pnl, risk_amount in closed_messages:
             icon = "✅" if result == "WIN" else "❌"
             label = "TP HIT / WIN" if result == "WIN" else "SL HIT / LOSS"
-
             telegram_async(
-                f"{icon} V5 {label} — {symbol}\n"
+                f"{icon} V6 {label} — {symbol}\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Side: {side}\n"
                 f"Entry: {entry:.8g}\n"
                 f"Exit: {px:.8g}\n"
                 f"TP: {tp:.8g}\n"
-                f"SL: {sl:.8g}\n\n"
-                f"📊 V5 PERFORMANCE\n"
+                f"SL: {sl:.8g}\n"
+                f"Risk Budget: ${risk_amount:.2f}\n"
+                f"Trade P/L: {'+' if pnl >= 0 else '-'}${abs(pnl):.2f}\n\n"
+                f"📊 V6 RISK-MANAGED PERFORMANCE\n"
                 f"Trades: {p['total_trades']}\n"
                 f"Wins: {p['wins']}\n"
                 f"Losses: {p['losses']}\n"
@@ -2186,7 +2191,7 @@ def _whale_levels(symbol):
 
 def multi_strategy_setup_15m(symbol, reg, st):
     """
-    V5 simple formula inferred from the user-provided examples:
+    V6 simple liquidity formula inferred from the user-provided examples:
     liquidity/whale wall + order-block or prior-liquidity location + spinning-top/rejection reaction.
     RSI is supportive, never a standalone entry.
     """
@@ -2279,35 +2284,63 @@ def multi_strategy_setup_15m(symbol, reg, st):
 # ============================================================
 
 def _simple_risk(entry, side, setup):
+    """
+    Keep the existing TP selection exactly as before, but tighten only the SL.
+
+    The original structural/ATR distance is still used to choose the TP so the
+    liquidity target does not move closer just because the stop is tighter.
+    The final SL for new trades is clamped to 0.25%-0.50% by default.
+    """
     atr15 = float(setup.get("atr") or 0)
     if entry <= 0 or atr15 <= 0:
         return None
+
     extreme = float(setup.get("sweep_extreme") or entry)
     buffer = 0.15 * atr15
+
+    # Original stop distance: preserve this ONLY for the existing TP formula.
     if side == "BUY":
-        sl = min(extreme - buffer, entry - 0.45 * atr15)
-        dist = entry - sl
+        original_sl = min(extreme - buffer, entry - 0.45 * atr15)
+        original_dist = entry - original_sl
     else:
-        sl = max(extreme + buffer, entry + 0.45 * atr15)
-        dist = sl - entry
-    risk_pct = dist / entry if entry else 0
-    # Keep paper-risk practical, but do not reject ordinary crypto volatility too aggressively.
-    if risk_pct <= 0 or risk_pct > 0.012:
-        dist = min(max(0.004 * entry, 0.70 * atr15), 0.012 * entry)
-        risk_pct = dist / entry
-        sl = entry - dist if side == "BUY" else entry + dist
+        original_sl = max(extreme + buffer, entry + 0.45 * atr15)
+        original_dist = original_sl - entry
+
+    original_pct = original_dist / entry if entry else 0.0
+    if original_pct <= 0 or original_pct > 0.012:
+        original_dist = min(max(0.004 * entry, 0.70 * atr15), 0.012 * entry)
+
+    # TP logic is intentionally unchanged and uses the ORIGINAL distance.
     target = float(setup.get("target_liquidity") or 0)
     rr_target = max(SIMPLE_MIN_RR, RR_TARGET)
     if side == "BUY":
-        tp_rr = entry + dist * rr_target
-        tp = target if target > entry + dist * SIMPLE_MIN_RR else tp_rr
-        tp = min(tp, entry + dist * 3.0) if tp > entry else tp_rr
+        tp_rr = entry + original_dist * rr_target
+        tp = target if target > entry + original_dist * SIMPLE_MIN_RR else tp_rr
+        tp = min(tp, entry + original_dist * 3.0) if tp > entry else tp_rr
     else:
-        tp_rr = entry - dist * rr_target
-        tp = target if 0 < target < entry - dist * SIMPLE_MIN_RR else tp_rr
-        tp = max(tp, entry - dist * 3.0) if 0 < tp < entry else tp_rr
-    rr = abs(tp - entry) / dist if dist > 0 else rr_target
-    return {"risk_pct": risk_pct, "risk_dist": dist, "sl": sl, "tp": tp, "rr": rr, "structural_level": extreme}
+        tp_rr = entry - original_dist * rr_target
+        tp = target if 0 < target < entry - original_dist * SIMPLE_MIN_RR else tp_rr
+        tp = max(tp, entry - original_dist * 3.0) if 0 < tp < entry else tp_rr
+
+    # SL-only adjustment: keep a practical minimum but cap wide stops.
+    min_sl_dist = max(0.0, SIMPLE_MIN_SL_PCT * entry)
+    max_sl_dist = max(min_sl_dist, SIMPLE_MAX_SL_PCT * entry)
+    sl_dist = min(max(original_dist, min_sl_dist), max_sl_dist)
+
+    sl = entry - sl_dist if side == "BUY" else entry + sl_dist
+    risk_pct = sl_dist / entry if entry else 0.0
+    rr = abs(tp - entry) / sl_dist if sl_dist > 0 else rr_target
+
+    return {
+        "risk_pct": risk_pct,
+        "risk_dist": sl_dist,
+        "sl": sl,
+        "tp": tp,
+        "rr": rr,
+        "structural_level": extreme,
+        "original_stop_pct": original_dist / entry if entry else 0.0,
+        "sl_adjusted": abs(sl_dist - original_dist) > 1e-12,
+    }
 
 
 def _deep_scan_one(item):
@@ -2396,13 +2429,13 @@ def scan_once():
     scan_start = time.time()
 
     scan_log("================================")
-    scan_log("RAZA V5 SIMPLE LIQUIDITY SCAN START")
+    scan_log("RAZA V6 SIMPLE LIQUIDITY RISK-MANAGED SCAN START")
 
     with state_lock:
         state["status"] = (
-            "V5 24/7 scanning ALL Bitget USDT-M Futures..."
+            "V6 24/7 scanning ALL Bitget USDT-M Futures..."
             if SCAN_ALL_COINS
-            else f"V5 24/7 scanning Top {TOP_COINS} Bitget Futures..."
+            else f"V6 24/7 scanning Top {TOP_COINS} Bitget Futures..."
         )
         state["last_error"] = None
         state["scan_progress"] = "0/0"
@@ -2641,8 +2674,10 @@ def scan_once():
                     c["signal"],
                 )
             ):
+                trade_id = add_open_trade(c)
+                if not trade_id:
+                    continue
                 save_signal(c)
-                add_open_trade(c)
 
                 with state_lock:
                     state["latest_signal"] = c
@@ -2650,7 +2685,7 @@ def scan_once():
                 p = performance()
 
                 telegram_async(
-                    f"🚨 RAZA SHAH SIGNAL V5 — TRADE READY\n\n"
+                    f"🚨 RAZA SHAH SIGNAL V6 — TRADE READY\n\n"
                     f"Exchange: BITGET FUTURES\n"
                     f"Coin: {c['symbol']}\n"
                     f"Side: "
@@ -2691,12 +2726,12 @@ def scan_once():
 
         if alerts:
             state["status"] = (
-                f"V5: {alerts} auto paper trade(s) added"
+                f"V6: {alerts} risk-managed paper trade(s) added"
             )
 
         elif best:
             state["status"] = (
-                f"V5 best: {best['symbol']} "
+                f"V6 best: {best['symbol']} "
                 f"{'LONG' if best['signal']=='BUY' else 'SHORT'} "
                 f"{best['score']}/100 — {best['status']}"
             )
@@ -2712,7 +2747,7 @@ def scan_once():
             )
 
             state["status"] = (
-                f"V5 scanning — main block: {top_block}"
+                f"V6 scanning — main block: {top_block}"
             )
 
         if (
@@ -2792,7 +2827,7 @@ def ensure_otp_for_ip(ip):
         }
 
     telegram_async(
-        f"🔐 RAZA SHAH SIGNAL V5\n"
+        f"🔐 RAZA SHAH SIGNAL V6\n"
         f"ACCESS REQUEST\n\n"
         f"Permission Code: {code}\n"
         f"IP: {ip}\n"
@@ -2938,7 +2973,7 @@ def telegram_hourly_status_loop():
                 best_line = "Best: none"
 
             telegram_async(
-                f"🟢 RAZA SHAH SIGNAL V5\n"
+                f"🟢 RAZA SHAH SIGNAL V6\n"
                 f"1 HOUR STATUS\n\n"
                 f"Exchange: BITGET FUTURES\n"
                 f"Scanner: {'LIVE' if st.get('running') else 'OFFLINE'}\n"
@@ -2990,8 +3025,8 @@ def scanner_loop():
     p = performance()
 
     telegram_async(
-        f"🟢 RAZA SHAH SIGNAL V5\n"
-        f"LIVE PAPER TEST ACTIVE\n\n"
+        f"🟢 RAZA SHAH SIGNAL V6\n"
+        f"RISK-MANAGED PAPER TEST ACTIVE\n\n"
         f"Logic: Time → 4H Regime → 1H Bias → 15M Location/Liquidity → "
         f"Displacement → 5M Structure → Flow/Book/OI → Risk\n"
         f"Exchange: BITGET FUTURES\n"
@@ -3004,7 +3039,8 @@ def scanner_loop():
         f"BTC Filter: {'ON' if BTC_FILTER_ENABLED else 'OFF'}\n"
         f"Dynamic R:R: 1:{RR_TARGET:.2f}\n"
         f"Paper Tester: "
-        f"${TEST_START_CAPITAL:.0f} @ {TEST_LEVERAGE:.0f}x\n\n"
+        f"${TEST_START_CAPITAL:.0f} @ {TEST_LEVERAGE:.0f}x | Risk/trade: {ACCOUNT_RISK_PCT*100:.1f}% | Max open: {MAX_OPEN_TRADES}\n"
+        f"SL envelope: {SIMPLE_MIN_SL_PCT*100:.2f}%-{SIMPLE_MAX_SL_PCT*100:.2f}% | TP logic unchanged\n\n"
         f"V4 history: {p['total_trades']} trades\n"
         f"Winning: {p['win_rate']:.2f}%\n\n"
         f"Score = quality only, not entry trigger.\n"
@@ -3110,8 +3146,10 @@ def api_status():
         ),
         "risk_rules": {
             "score_role": "QUALITY ONLY",
+            "account_risk_pct": ACCOUNT_RISK_PCT * 100,
+            "max_open_trades": MAX_OPEN_TRADES,
             "trade_ready": (
-                "All V4 hard filters must pass. "
+                "Liquidity setup and live confirmation must pass. "
                 "Score alone cannot create a trade."
             ),
             "rr_target": RR_TARGET,
